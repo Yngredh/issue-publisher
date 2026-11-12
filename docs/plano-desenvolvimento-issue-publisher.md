@@ -56,7 +56,7 @@ Escolhas de implementação que os documentos não fecham. **Status: D1 a D11 va
 | D8 | Versão da API do GitHub | header `X-GitHub-Api-Version: 2022-11-28` |
 | D9 | Códigos de pré-condição em `last_error` | Além dos códigos da spec (`invalid_comment_body`, `marker_mismatch`, `repository_not_in_catalog`): `proposal_not_valid` (sem `VALID` ou sem `comment_body`) e `case_not_ready` (caso fora de `READY_TO_PUBLISH`) |
 | D10 | Limite de `PUBLISH_MAX_TRIES` | Validado entre 1 e 3 no `Settings`, padrão 3: o limite é fixo em 3 na Issue Publisher Spec, e os `CHECK` de `publications.tries` e de `publication_tries.try_number` vão até 3 |
-| D11 | Dados de `triage` e `catalog` nos testes | Script SQL só de teste em `tests/fixtures/sql/triage_catalog_stub.sql`, copiado da Modelagem de dados (tabelas `triage.issue_cases`, `triage.analysis_attempts`, `triage.proposals`, view `triage.publishable_proposals` e `catalog.projects`), aplicado pelas fixtures. Nunca vai para `migrations/` |
+| D11 | Dados de `triage` e `catalog` nos testes | Script SQL só de teste em `tests/fixtures/sql/triage_catalog_stub.sql`, copiado da Modelagem de dados (tabelas `triage.issue_cases`, `triage.analysis_attempts`, `triage.proposals`, view `triage.publishable_proposals` e `catalog.projects`), aplicado pelas fixtures. Nunca vai para `migrations/`. Cópia local do DDL: seção "Modelo de dados > DDL de `triage` e `catalog` para o stub de teste (D11)" deste plano (registrado em 2026-11-12, porque os agentes não leem os documentos do claude.ai) |
 
 ## Contratos
 
@@ -161,6 +161,102 @@ CREATE TABLE publisher.publication_tries (
 
 Lidos, mas de outros donos (só existem nos testes pelo script de D11): a view `triage.publishable_proposals` (dona: `issue-triage`) e a tabela `catalog.projects` (seed do ambiente). As linhas de `publications` nunca são apagadas.
 
+### DDL de `triage` e `catalog` para o stub de teste (D11)
+
+Cópia literal da Modelagem de dados (revisão 139, de 2026-11-12), restrita ao que a view `triage.publishable_proposals` e `catalog.projects` precisam: as três tabelas de `triage`, a view e `catalog.projects`. Ficaram de fora, de propósito, `triage.route_decisions`, `triage.publish_outbox`, `catalog.triage_guidelines`, o índice `analysis_attempts_one_per_edit` e os papéis e `GRANT` (P6). Este é o conteúdo de `tests/fixtures/sql/triage_catalog_stub.sql`; os schemas `triage` e `catalog` pertencem a outros serviços e o stub nunca vai para `migrations/`. Se a Modelagem de dados mudar essas tabelas, este bloco é atualizado aqui primeiro.
+
+```sql
+CREATE SCHEMA IF NOT EXISTS triage;
+CREATE SCHEMA IF NOT EXISTS catalog;
+
+CREATE TABLE triage.issue_cases (
+  id               bigserial PRIMARY KEY,
+  repository       text NOT NULL,
+  issue_number     int  NOT NULL,
+  origin_event_id  text NOT NULL UNIQUE,           -- primeiro issue.created da issue
+  status           text NOT NULL CHECK (status IN (
+                     'ANALYZING', 'NEEDS_REVIEW', 'MAX_RETRIES_REACHED',
+                     'READY_TO_PUBLISH', 'CANCELLED', 'FINISHED')),
+  status_reason    text NOT NULL,                  -- motivo do status (combinação no CHECK abaixo)
+  category         text CHECK (category IN ('bug', 'melhoria', 'duvida', 'indeterminado')),
+  current_attempt  int NOT NULL DEFAULT 1 CHECK (current_attempt >= 1),
+  manual_attempts  int NOT NULL DEFAULT 0 CHECK (manual_attempts >= 0),  -- limite: MAX_MANUAL_ATTEMPTS
+  closed_by_review_id  bigint,                 -- inbound.issue_review_history.id
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (repository, issue_number),               -- um caso por issue
+  CHECK (
+    (status = 'ANALYZING'              AND status_reason IN ('initial', 'author_edit', 'enrich', 'reprocess'))
+    OR (status = 'READY_TO_PUBLISH'    AND status_reason = 'empty_description')
+    OR (status = 'READY_TO_PUBLISH'    AND status_reason = 'proposal_validated')
+    OR (status = 'NEEDS_REVIEW'        AND status_reason IN ('unknown_repo', 'insufficient_content',
+                                                           'invalid_proposal', 'technical_failure'))
+    OR (status = 'MAX_RETRIES_REACHED' AND status_reason = 'manual_attempts_exhausted')
+    OR (status IN ('CANCELLED', 'FINISHED') AND status_reason = 'closed_by_reviewer')
+  ),
+  CHECK (status NOT IN ('CANCELLED', 'FINISHED') OR closed_by_review_id IS NOT NULL)
+);
+
+CREATE TABLE triage.analysis_attempts (
+  id           bigserial PRIMARY KEY,
+  case_id      bigint NOT NULL REFERENCES triage.issue_cases (id),
+  event_id     text NOT NULL,                      -- origin_event_id do caso
+  attempt      int  NOT NULL CHECK (attempt >= 1),
+  trigger      text NOT NULL CHECK (trigger IN ('initial', 'author_edit', 'enrich', 'reprocess')),
+  trigger_ref  text,                               -- eventId do issues.edited ou id da resolução
+  state        text NOT NULL CHECK (state IN ('IN_PROGRESS', 'DONE')),
+  outcome      text,                               -- status do caso ao terminar a tentativa
+  started_at   timestamptz NOT NULL DEFAULT now(),
+  finished_at  timestamptz,
+  UNIQUE (event_id, attempt)                       -- chave de deduplicação da fila analysis
+);
+
+CREATE TABLE triage.proposals (
+  id                 bigserial PRIMARY KEY,
+  attempt_id         bigint NOT NULL UNIQUE REFERENCES triage.analysis_attempts (id),
+  kind               text NOT NULL CHECK (kind IN ('triage', 'missing_info')),
+  specialist         text CHECK (specialist IN ('bug', 'melhoria', 'dominio')),
+  category           text CHECK (category IN ('bug', 'melhoria', 'duvida')),
+  summary            text,
+  analysis_result    text,
+  evidence           jsonb NOT NULL DEFAULT '[]',  -- trechos do evento ou do catálogo
+  tool_calls         jsonb NOT NULL DEFAULT '[]',  -- ferramenta, argumentos, duração (RNF11)
+  raw_output         jsonb,                        -- saída bruta, guardada mesmo se reprovada (RF31)
+  validation_status  text NOT NULL CHECK (validation_status IN ('VALID', 'INVALID')),
+  validation_error   text,                         -- motivo da reprovação
+  comment_body       text,                         -- texto final do template, com marcador oculto
+  prompt_version     text,
+  model              text,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  CHECK (kind = 'missing_info' OR specialist IS NOT NULL),
+  CHECK (validation_status = 'VALID' OR validation_error IS NOT NULL),
+  CHECK (validation_status = 'INVALID' OR comment_body IS NOT NULL)
+);
+
+CREATE VIEW triage.publishable_proposals AS
+SELECT
+  pr.id             AS proposal_id,
+  c.repository,
+  c.issue_number,
+  c.origin_event_id,                       -- vai no marcador oculto
+  a.attempt         AS revision,           -- attempt que gerou a proposta
+  c.current_attempt,                       -- para descartar mensagem obsoleta
+  c.status          AS case_status,        -- precisa estar em READY_TO_PUBLISH
+  pr.kind,
+  pr.validation_status,
+  pr.comment_body
+FROM triage.proposals pr
+JOIN triage.analysis_attempts a ON a.id = pr.attempt_id
+JOIN triage.issue_cases c ON c.id = a.case_id;
+
+CREATE TABLE catalog.projects (
+  repository   text PRIMARY KEY CHECK (repository ~ '^[^/\s]+/[^/\s]+$'),
+  name         text NOT NULL,
+  responsible  text NOT NULL,              -- citado no comentário (RF19)
+  description  text NOT NULL DEFAULT ''
+);
+```
+
 ## Atividades
 
 ### Etapa 1 — Fundação do worker
@@ -178,7 +274,7 @@ Requisitos: RNF07. Depende de: Etapa 1. Pré-condição: decisões D2 e D11 vali
 - [ ] Criar `migrations/0001_publisher_schema.sql` com o DDL da seção "Modelo de dados".
 - [ ] Criar o runner `python -m issue_publisher.migrate` (D2), idempotente.
 - [ ] Criar o adaptador de conexão em `adapters/` (pool assíncrono do psycopg).
-- [ ] Criar `tests/fixtures/sql/triage_catalog_stub.sql` (D11), copiando da Modelagem de dados só o necessário para a view `triage.publishable_proposals` e para `catalog.projects`.
+- [ ] Criar `tests/fixtures/sql/triage_catalog_stub.sql` (D11) com o conteúdo exato da seção "Modelo de dados > DDL de `triage` e `catalog` para o stub de teste (D11)", sem acrescentar nem remover nada.
 - [ ] Criar fixtures em `tests/conftest.py`: PostgreSQL do testcontainers por sessão com as migrações e o stub aplicados, e uma fábrica de dados de teste que cria caso, tentativa, proposta e projeto do catálogo.
 - [ ] Testes de integração: a chave única `(repository, issue_number, revision)`; `PUBLISHED` sem id ou URL é recusado; `FAILED` sem `failure_kind` é recusado; `tries` e `try_number` fora de 0 a 3 são recusados; o runner é idempotente; a view do stub devolve as colunas de "Contratos > Leitura da proposta".
 
