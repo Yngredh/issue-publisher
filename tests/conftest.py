@@ -11,6 +11,7 @@ from pathlib import Path
 import psycopg
 import pytest
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.community.rabbitmq import RabbitMqContainer
 
 from issue_publisher.migrate import apply_migrations
 
@@ -37,6 +38,21 @@ def database_url(postgres_container: PostgresContainer) -> str:
     with psycopg.connect(url, autocommit=True) as conn:
         conn.execute(TRIAGE_CATALOG_STUB.read_text(encoding="utf-8"))
     return url
+
+
+@pytest.fixture(scope="session")
+def rabbitmq_container() -> Iterator[RabbitMqContainer]:
+    """RabbitMQ do testcontainers (imagem da D5), um por sessão de testes."""
+    with RabbitMqContainer("rabbitmq:3-management") as container:
+        yield container
+
+
+@pytest.fixture(scope="session")
+def rabbitmq_url(rabbitmq_container: RabbitMqContainer) -> str:
+    """URL AMQP do RabbitMQ da sessão."""
+    host = rabbitmq_container.get_container_host_ip()
+    port = rabbitmq_container.get_exposed_port(rabbitmq_container.port)
+    return f"amqp://guest:guest@{host}:{port}/"
 
 
 @pytest.fixture

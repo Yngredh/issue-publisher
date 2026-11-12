@@ -8,6 +8,7 @@ import structlog
 
 from issue_publisher.config import Settings
 from issue_publisher.worker import Worker, install_stop_handlers
+from tests.fakes.github import FakeGitHubIssues
 
 TOKEN = "ghp_test_token_never_logged"
 
@@ -22,18 +23,35 @@ def settings(monkeypatch: pytest.MonkeyPatch) -> Settings:
     )
 
 
-async def test_worker_runs_until_stop_requested(settings: Settings) -> None:
-    worker = Worker(settings)
+class _NoDatabase:
+    """Banco que nunca é usado: sem broker, nenhuma mensagem chega."""
+
+    def connection(self) -> object:
+        raise AssertionError("database must not be used without messages")
+
+
+async def test_worker_retries_broker_until_stop_requested(settings: Settings) -> None:
+    unreachable = settings.model_copy(update={"RABBITMQ_URL": "amqp://guest:guest@127.0.0.1:1/"})
+    worker = Worker(
+        unreachable, github=FakeGitHubIssues(), connections=_NoDatabase(), backoff_initial_s=0.05
+    )
 
     with structlog.testing.capture_logs() as logs:
         task = asyncio.create_task(worker.run())
-        await asyncio.sleep(0)
+        for _ in range(100):
+            if sum(entry["event"] == "worker.broker_unavailable" for entry in logs) >= 2:
+                break
+            await asyncio.sleep(0.05)
         assert not task.done()
         worker.request_stop()
-        await asyncio.wait_for(task, timeout=1)
+        await asyncio.wait_for(task, timeout=5)
 
     events = [entry["event"] for entry in logs]
-    assert events == ["worker.started", "worker.stop_requested", "worker.stopped"]
+    assert events[0] == "worker.started"
+    assert events.count("worker.broker_unavailable") >= 2
+    assert "worker.stop_requested" in events
+    assert events[-1] == "worker.stopped"
+    assert not worker.consuming.is_set()
     assert TOKEN not in repr(logs)
 
 

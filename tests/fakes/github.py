@@ -3,7 +3,9 @@
 Guarda os comentários por issue, aceita respostas programadas por chamada e conta os POSTs.
 """
 
+import asyncio
 import itertools
+import time
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -39,7 +41,7 @@ CreateResponse = GitHubError | CreatedThenFail | None
 class FakeGitHubIssues:
     """Implementação em memória de `GitHubIssuesPort`."""
 
-    def __init__(self, bot_login: str = "triage-bot") -> None:
+    def __init__(self, bot_login: str = "triage-bot", *, create_delay_s: float = 0) -> None:
         self.bot_login = bot_login
         self.comments: dict[tuple[str, int], list[StoredComment]] = defaultdict(list)
         self.create_responses: deque[CreateResponse] = deque()
@@ -47,6 +49,8 @@ class FakeGitHubIssues:
         self.post_count = 0
         self.find_count = 0
         self.posts: list[tuple[str, int, str]] = []
+        self.post_times: list[float] = []
+        self.create_delay_s = create_delay_s
         self._ids = itertools.count(1000)
 
     # Programação das respostas -------------------------------------------------------------
@@ -90,6 +94,9 @@ class FakeGitHubIssues:
     async def create_comment(self, repository: str, issue_number: int, body: str) -> GitHubComment:
         self.post_count += 1
         self.posts.append((repository, issue_number, body))
+        self.post_times.append(time.monotonic())
+        if self.create_delay_s:
+            await asyncio.sleep(self.create_delay_s)
         programmed = self.create_responses.popleft() if self.create_responses else None
         if isinstance(programmed, GitHubError):
             raise programmed
