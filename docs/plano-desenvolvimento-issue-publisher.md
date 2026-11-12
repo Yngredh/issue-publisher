@@ -271,12 +271,12 @@ Requisitos: RNF14, RNF18. Depende de: pré-requisitos. Pré-condição: decisõe
 
 ### Etapa 2 — Schema publisher, migrações e dados de teste
 Requisitos: RNF07. Depende de: Etapa 1. Pré-condição: decisões D2 e D11 validadas.
-- [ ] Criar `migrations/0001_publisher_schema.sql` com o DDL da seção "Modelo de dados".
-- [ ] Criar o runner `python -m issue_publisher.migrate` (D2), idempotente.
-- [ ] Criar o adaptador de conexão em `adapters/` (pool assíncrono do psycopg).
-- [ ] Criar `tests/fixtures/sql/triage_catalog_stub.sql` (D11) com o conteúdo exato da seção "Modelo de dados > DDL de `triage` e `catalog` para o stub de teste (D11)", sem acrescentar nem remover nada.
-- [ ] Criar fixtures em `tests/conftest.py`: PostgreSQL do testcontainers por sessão com as migrações e o stub aplicados, e uma fábrica de dados de teste que cria caso, tentativa, proposta e projeto do catálogo.
-- [ ] Testes de integração: a chave única `(repository, issue_number, revision)`; `PUBLISHED` sem id ou URL é recusado; `FAILED` sem `failure_kind` é recusado; `tries` e `try_number` fora de 0 a 3 são recusados; o runner é idempotente; a view do stub devolve as colunas de "Contratos > Leitura da proposta".
+- [x] Criar `migrations/0001_publisher_schema.sql` com o DDL da seção "Modelo de dados".
+- [x] Criar o runner `python -m issue_publisher.migrate` (D2), idempotente.
+- [x] Criar o adaptador de conexão em `adapters/` (pool assíncrono do psycopg).
+- [x] Criar `tests/fixtures/sql/triage_catalog_stub.sql` (D11) com o conteúdo exato da seção "Modelo de dados > DDL de `triage` e `catalog` para o stub de teste (D11)", sem acrescentar nem remover nada.
+- [x] Criar fixtures em `tests/conftest.py`: PostgreSQL do testcontainers por sessão com as migrações e o stub aplicados, e uma fábrica de dados de teste que cria caso, tentativa, proposta e projeto do catálogo.
+- [x] Testes de integração: a chave única `(repository, issue_number, revision)`; `PUBLISHED` sem id ou URL é recusado; `FAILED` sem `failure_kind` é recusado; `tries` e `try_number` fora de 0 a 3 são recusados; o runner é idempotente; a view do stub devolve as colunas de "Contratos > Leitura da proposta".
 
 ### Etapa 3 — Porta do GitHub e cliente HTTP
 Requisitos: RF23, RF24, RF25, RNF16. Depende de: Etapa 1. Pré-condição: decisões D7 e D8 validadas.
