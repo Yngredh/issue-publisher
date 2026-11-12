@@ -361,3 +361,55 @@ async def test_retry_after_is_respected_in_the_delay(
     assert tries_rows(database_url, publication_row(database_url, seeded.proposal_id)["id"]) == [
         (1, 429, None)
     ]
+
+
+async def test_tries_already_at_reduced_limit_fails_without_post(
+    database_url: str, make_committed_proposal: Callable[..., SeededProposal]
+) -> None:
+    """D14 P-b: linha `PENDING` com `tries = 2` e `PUBLISH_MAX_TRIES = 2` não faz POST."""
+    seeded = make_committed_proposal()
+    with psycopg.connect(database_url) as conn:
+        conn.execute(
+            "INSERT INTO publisher.publications (repository, issue_number, revision, "
+            "proposal_id, origin_event_id, kind, state, tries) "
+            "VALUES (%s, %s, %s, %s, %s, %s, 'PENDING', 2)",
+            (
+                seeded.repository,
+                seeded.issue_number,
+                seeded.revision,
+                seeded.proposal_id,
+                seeded.origin_event_id,
+                seeded.kind,
+            ),
+        )
+    github = FakeGitHubIssues(bot_login=BOT)
+    policy = RetryPolicy(max_tries=2, delays_s=(10,), retry_after_max_s=60)
+
+    with structlog.testing.capture_logs() as logs:
+        async with await AsyncConnection.connect(database_url) as conn:
+            async with conn.transaction():
+                reader = PostgresProposalReader(conn)
+                proposal = await reader.get_publishable_proposal(seeded.proposal_id)
+                assert proposal is not None
+                result = await publish_proposal(
+                    proposal,
+                    PostgresPublicationStore(conn),
+                    reader,
+                    github,
+                    account=BOT,
+                    policy=policy,
+                )
+
+    assert result.outcome is PublishOutcome.FAILED
+    assert github.post_count == 0
+    row = publication_row(database_url, seeded.proposal_id)
+    assert row["state"] == "FAILED"
+    assert row["failure_kind"] == "retries_exhausted"
+    assert row["tries"] == 2
+    assert row["last_error"] == "retries_exhausted: tries already at PUBLISH_MAX_TRIES"
+    assert tries_rows(database_url, row["id"]) == []
+    [failed] = [log for log in logs if log["event"] == "publish.failed"]
+    assert failed["failure_kind"] == "retries_exhausted"
+    assert failed["last_error"] == "retries_exhausted: tries already at PUBLISH_MAX_TRIES"
+    assert failed["event_id"] == seeded.origin_event_id
+    assert not any(log["event"] == "publish.try" for log in logs)

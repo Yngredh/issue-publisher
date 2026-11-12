@@ -26,6 +26,9 @@ logger = structlog.get_logger()
 
 CREATED_STATUS = 201
 
+TRIES_ALREADY_AT_MAX_ERROR = "retries_exhausted: tries already at PUBLISH_MAX_TRIES"
+"""`last_error` quando a linha já chega ao passo 8 com `tries >= PUBLISH_MAX_TRIES` (D14 P-b)."""
+
 
 @dataclass(frozen=True)
 class RetryPolicy:
@@ -123,12 +126,23 @@ async def publish_proposal(
             return PublishResult(
                 PublishOutcome.RETRY, publication.id, delay_s=delay_s, last_error=error.last_error
             )
-        return await _fail(store, log, publication.id, FailureKind.PERMANENT, error)
+        return await _fail_with(store, log, publication.id, FailureKind.PERMANENT, error)
 
     if found is not None:
         await store.mark_published(publication.id, found)
         log.info("publish.marker_found", github_comment_id=found.id)
         return PublishResult(PublishOutcome.PUBLISHED, publication.id)
+
+    # Passo 8: limite já atingido (limite reduzido com a linha `PENDING`) → sem POST (D14 P-b).
+    if publication.tries >= policy.max_tries:
+        return await _fail(
+            store,
+            log,
+            publication.id,
+            FailureKind.RETRIES_EXHAUSTED,
+            TRIES_ALREADY_AT_MAX_ERROR,
+            http_status=None,
+        )
 
     # Passo 8: POST, linha em `publication_tries` e `tries` incrementado na mesma transação.
     try_number = publication.tries + 1
@@ -146,9 +160,18 @@ async def publish_proposal(
         )
         # Passo 9 para as falhas.
         if not error.temporary:
-            return await _fail(store, log, publication.id, FailureKind.PERMANENT, error)
+            return await _fail_with(
+                store, log, publication.id, FailureKind.PERMANENT, error, try_number=try_number
+            )
         if try_number >= policy.max_tries:
-            return await _fail(store, log, publication.id, FailureKind.RETRIES_EXHAUSTED, error)
+            return await _fail_with(
+                store,
+                log,
+                publication.id,
+                FailureKind.RETRIES_EXHAUSTED,
+                error,
+                try_number=try_number,
+            )
         await store.set_last_error(publication.id, error.last_error)
         delay_s = policy.delay_after_try(try_number, error.retry_after_s)
         return PublishResult(
@@ -162,18 +185,43 @@ async def publish_proposal(
     return PublishResult(PublishOutcome.PUBLISHED, publication.id)
 
 
-async def _fail(
+async def _fail_with(
     store: PublicationStore,
     log: structlog.typing.FilteringBoundLogger,
     publication_id: int,
     failure_kind: FailureKind,
     error: GitHubError,
+    *,
+    try_number: int | None = None,
 ) -> PublishResult:
-    await store.mark_failed(publication_id, failure_kind, error.last_error)
+    return await _fail(
+        store,
+        log,
+        publication_id,
+        failure_kind,
+        error.last_error,
+        http_status=error.http_status,
+        try_number=try_number,
+    )
+
+
+async def _fail(
+    store: PublicationStore,
+    log: structlog.typing.FilteringBoundLogger,
+    publication_id: int,
+    failure_kind: FailureKind,
+    last_error: str,
+    *,
+    http_status: int | None,
+    try_number: int | None = None,
+) -> PublishResult:
+    await store.mark_failed(publication_id, failure_kind, last_error)
+    extra = {} if try_number is None else {"try_number": try_number}
     log.warning(
         "publish.failed",
         failure_kind=failure_kind.value,
-        http_status=error.http_status,
-        last_error=error.last_error,
+        http_status=http_status,
+        last_error=last_error,
+        **extra,
     )
-    return PublishResult(PublishOutcome.FAILED, publication_id, last_error=error.last_error)
+    return PublishResult(PublishOutcome.FAILED, publication_id, last_error=last_error)

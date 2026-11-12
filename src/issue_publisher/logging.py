@@ -8,8 +8,9 @@ from issue_publisher.config import Settings
 def configure_logging(settings: Settings) -> None:
     """Configure structlog to emit JSON logs at the level defined in `settings`.
 
-    `eventId` is the correlation id: bind it with
-    `structlog.contextvars.bind_contextvars(eventId=...)` and it is added to every log line.
+    `event_id` (the case `origin_event_id`) is the correlation id: the consumer binds it with
+    `structlog.contextvars.bind_contextvars(event_id=...)` while it processes each message,
+    and it is added to every log line.
     """
     level = logging.getLevelNamesMapping()[settings.LOG_LEVEL.upper()]
     structlog.configure(

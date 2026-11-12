@@ -73,6 +73,19 @@ class ScreenResult:
     proposal: PublishableProposal | None = None
 
 
+def bind_case_context(proposal: PublishableProposal) -> None:
+    """Liga `event_id` e a identificação do caso ao contexto do structlog (RNF14).
+
+    Vale até quem processa a mensagem restaurar o contexto (`MessageHandler.process`).
+    """
+    structlog.contextvars.bind_contextvars(
+        event_id=proposal.origin_event_id,
+        repository=proposal.repository,
+        issue_number=proposal.issue_number,
+        revision=proposal.revision,
+    )
+
+
 def parse_message(body: bytes | str) -> PublishMessage | None:
     """Passo 1: valida o schema; JSON ou campos inválidos devolvem `None`."""
     try:
@@ -84,20 +97,34 @@ def parse_message(body: bytes | str) -> PublishMessage | None:
 async def screen_message(body: bytes | str, reader: ProposalReader) -> ScreenResult:
     """Passos 1 a 3 do processamento, sem broker e sem escrever no banco.
 
+    Registra `publish.received` ao começar. Com a proposta lida e a `revision` conferida,
+    liga `event_id`, `repository`, `issue_number` e `revision` ao contexto do structlog.
+
     1. Schema inválido → descartar (`publish.discarded_invalid`).
     2. Proposta inexistente ou `revision` diferente da view → descartar.
     3. `revision < current_attempt` → obsoleta (`publish.skipped_stale`).
     """
+    logger.info("publish.received")
     message = parse_message(body)
     if message is None:
         logger.info("publish.discarded_invalid")
         return ScreenResult(ScreenOutcome.DISCARDED_INVALID)
 
     proposal = await reader.get_publishable_proposal(message.proposal_id)
-    if proposal is None or proposal.revision != message.revision:
+    if proposal is None:
         logger.info("publish.discarded_invalid", revision=message.revision)
         return ScreenResult(ScreenOutcome.DISCARDED_INVALID, message=message)
+    if proposal.revision != message.revision:
+        logger.info(
+            "publish.discarded_invalid",
+            event_id=proposal.origin_event_id,
+            repository=proposal.repository,
+            issue_number=proposal.issue_number,
+            revision=message.revision,
+        )
+        return ScreenResult(ScreenOutcome.DISCARDED_INVALID, message=message)
 
+    bind_case_context(proposal)
     log = logger.bind(
         event_id=proposal.origin_event_id,
         repository=proposal.repository,

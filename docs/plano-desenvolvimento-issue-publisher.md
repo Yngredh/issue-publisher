@@ -326,12 +326,12 @@ Requisitos: RF25, RNF03. Depende de: Etapa 6. Pré-condição: decisões D3 e D7
 
 ### Etapa 8 — Observabilidade
 Requisitos: RNF14. Depende de: Etapa 7. Pré-condição: decisão D14 validada.
-- [ ] Correção da D14 (P-a): o `Settings` exige pelo menos `max(1, PUBLISH_MAX_TRIES - 1)` valores em `PUBLISH_RETRY_DELAYS_S`; teste com `PUBLISH_MAX_TRIES=1` e lista vazia recusado.
-- [ ] Correção da D14 (P-b): antes do `POST`, `tries >= PUBLISH_MAX_TRIES` → `FAILED (retries_exhausted)` sem chamar o GitHub e com o `last_error` da D14; teste com linha `PENDING` em `tries = 2` e `PUBLISH_MAX_TRIES = 2` (nenhum `POST`, nenhuma linha nova em `publication_tries`).
-- [ ] Os oito eventos de log de "Contratos > Logs", todos com `event_id`, `repository`, `issue_number` e `revision` (quando já conhecidos), e com `try_number`, `http_status`, atraso, `failure_kind` e `last_error` onde a spec indica.
-- [ ] `event_id` ligado ao contexto do structlog durante o processamento de cada mensagem.
-- [ ] Nenhum log contém o token nem o corpo do comentário.
-- [ ] Testes com `structlog.testing.capture_logs` cobrindo cada evento e a ausência do token.
+- [x] Correção da D14 (P-a): o `Settings` exige pelo menos `max(1, PUBLISH_MAX_TRIES - 1)` valores em `PUBLISH_RETRY_DELAYS_S`; teste com `PUBLISH_MAX_TRIES=1` e lista vazia recusado.
+- [x] Correção da D14 (P-b): antes do `POST`, `tries >= PUBLISH_MAX_TRIES` → `FAILED (retries_exhausted)` sem chamar o GitHub e com o `last_error` da D14; teste com linha `PENDING` em `tries = 2` e `PUBLISH_MAX_TRIES = 2` (nenhum `POST`, nenhuma linha nova em `publication_tries`).
+- [x] Os oito eventos de log de "Contratos > Logs", todos com `event_id`, `repository`, `issue_number` e `revision` (quando já conhecidos), e com `try_number`, `http_status`, atraso, `failure_kind` e `last_error` onde a spec indica.
+- [x] `event_id` ligado ao contexto do structlog durante o processamento de cada mensagem.
+- [x] Nenhum log contém o token nem o corpo do comentário.
+- [x] Testes com `structlog.testing.capture_logs` cobrindo cada evento e a ausência do token.
 
 ### Etapa 9 — Resiliência, ferramentas locais e demonstração
 Requisitos: RF22 a RF25, RNF16. Depende de: Etapa 8.

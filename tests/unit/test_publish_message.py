@@ -95,7 +95,7 @@ async def test_invalid_schema_is_discarded_without_reading() -> None:
         result = await screen_message(b'{"proposalId": 5}', reader)
     assert result.outcome is ScreenOutcome.DISCARDED_INVALID
     assert reader.lookups == []
-    assert [log["event"] for log in logs] == ["publish.discarded_invalid"]
+    assert [log["event"] for log in logs] == ["publish.received", "publish.discarded_invalid"]
 
 
 async def test_missing_proposal_is_discarded() -> None:
@@ -110,7 +110,12 @@ async def test_revision_mismatch_is_discarded() -> None:
         result = await screen_message(b'{"proposalId": 5, "revision": 2}', reader)
     assert result.outcome is ScreenOutcome.DISCARDED_INVALID
     assert result.proposal is None
-    assert [log["event"] for log in logs] == ["publish.discarded_invalid"]
+    assert [log["event"] for log in logs] == ["publish.received", "publish.discarded_invalid"]
+    discarded = logs[1]
+    assert discarded["event_id"] == "evt-1"
+    assert discarded["repository"] == "acme/payments-api"
+    assert discarded["issue_number"] == 42
+    assert discarded["revision"] == 2
 
 
 async def test_stale_revision_is_skipped() -> None:
@@ -118,11 +123,13 @@ async def test_stale_revision_is_skipped() -> None:
     with structlog.testing.capture_logs() as logs:
         result = await screen_message(b'{"proposalId": 5, "revision": 1}', reader)
     assert result.outcome is ScreenOutcome.SKIPPED_STALE
-    assert logs[0]["event"] == "publish.skipped_stale"
-    assert logs[0]["event_id"] == "evt-1"
-    assert logs[0]["repository"] == "acme/payments-api"
-    assert logs[0]["issue_number"] == 42
-    assert logs[0]["revision"] == 1
+    assert [log["event"] for log in logs] == ["publish.received", "publish.skipped_stale"]
+    skipped = logs[1]
+    assert skipped["event_id"] == "evt-1"
+    assert skipped["repository"] == "acme/payments-api"
+    assert skipped["issue_number"] == 42
+    assert skipped["revision"] == 1
+    assert skipped["current_attempt"] == 2
 
 
 async def test_current_revision_proceeds() -> None:
@@ -134,4 +141,27 @@ async def test_current_revision_proceeds() -> None:
     assert result.outcome is ScreenOutcome.PROCEED
     assert result.proposal == proposal
     assert result.message == PublishMessage(proposalId=5, revision=1)
-    assert logs == []
+    assert [log["event"] for log in logs] == ["publish.received"]
+
+
+async def test_case_context_is_bound_once_the_proposal_is_known() -> None:
+    """RNF14: `event_id` e a identificação do caso vão para o contexto do structlog."""
+    structlog.contextvars.clear_contextvars()
+
+    await screen_message(b'{"proposalId": 5, "revision": 1}', FakeReader({5: make_proposal()}))
+
+    assert structlog.contextvars.get_contextvars() == {
+        "event_id": "evt-1",
+        "repository": "acme/payments-api",
+        "issue_number": 42,
+        "revision": 1,
+    }
+    structlog.contextvars.clear_contextvars()
+
+
+async def test_invalid_message_binds_no_case_context() -> None:
+    structlog.contextvars.clear_contextvars()
+
+    await screen_message(b'{"proposalId": 5, "revision": 2}', FakeReader({5: make_proposal()}))
+
+    assert structlog.contextvars.get_contextvars() == {}

@@ -8,8 +8,8 @@ fila, sem gastar tentativa (a transação é desfeita).
 """
 
 import asyncio
-from collections.abc import Awaitable, Callable
-from contextlib import AbstractAsyncContextManager
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import AbstractAsyncContextManager, contextmanager
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -101,7 +101,14 @@ class MessageHandler:
         self._wait = wait
 
     async def process(self, body: bytes) -> ProcessResult:
-        """Passos 1 a 9 numa transação; o commit acontece na saída do bloco (passo 10)."""
+        """Passos 1 a 9 numa transação; o commit acontece na saída do bloco (passo 10).
+
+        O `event_id` do caso fica ligado ao contexto do structlog só durante a mensagem.
+        """
+        with _restored_log_context():
+            return await self._process(body)
+
+    async def _process(self, body: bytes) -> ProcessResult:
         async with self._connections.connection() as conn:
             async with conn.transaction():
                 reader = PostgresProposalReader(conn)
@@ -161,6 +168,17 @@ class MessageHandler:
             delay_s=delay_s,
             last_error=publication.last_error if publication else None,
         )
+
+
+@contextmanager
+def _restored_log_context() -> Iterator[None]:
+    """Restaura o contexto do structlog ao fim da mensagem (o `event_id` não vaza)."""
+    saved = structlog.contextvars.get_contextvars()
+    try:
+        yield
+    finally:
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(**saved)
 
 
 async def _requeue(message: AbstractIncomingMessage) -> None:

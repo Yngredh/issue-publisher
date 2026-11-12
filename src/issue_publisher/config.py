@@ -36,8 +36,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _check_delays_cover_tries(self) -> Self:
-        """Exige um atraso para cada nova tentativa possível (`PUBLISH_MAX_TRIES - 1`)."""
-        required = self.PUBLISH_MAX_TRIES - 1
+        """Exige `max(1, PUBLISH_MAX_TRIES - 1)` atrasos (D14 P-a).
+
+        Um para cada nova tentativa possível e, no mínimo, um para a falha temporária na busca
+        do marcador (D12), que pode acontecer mesmo com `PUBLISH_MAX_TRIES = 1`.
+        """
+        required = max(1, self.PUBLISH_MAX_TRIES - 1)
         if len(self.PUBLISH_RETRY_DELAYS_S) < required:
             raise ValueError(
                 f"PUBLISH_RETRY_DELAYS_S needs at least {required} values "

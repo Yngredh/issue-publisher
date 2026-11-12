@@ -96,6 +96,22 @@ def test_fewer_tries_need_fewer_delays(monkeypatch: pytest.MonkeyPatch) -> None:
     assert Settings().PUBLISH_RETRY_DELAYS_S == [10]
 
 
+def test_single_try_still_needs_one_delay(monkeypatch: pytest.MonkeyPatch) -> None:
+    """D14 P-a: a falha temporária na busca do marcador (D12) sempre precisa de um atraso."""
+    monkeypatch.setenv("PUBLISH_MAX_TRIES", "1")
+    monkeypatch.setenv("PUBLISH_RETRY_DELAYS_S", "")
+
+    with pytest.raises(ValidationError, match="PUBLISH_RETRY_DELAYS_S"):
+        Settings()
+
+
+def test_single_try_with_one_delay_is_accepted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PUBLISH_MAX_TRIES", "1")
+    monkeypatch.setenv("PUBLISH_RETRY_DELAYS_S", "10")
+
+    assert Settings().PUBLISH_RETRY_DELAYS_S == [10]
+
+
 def test_token_not_in_repr() -> None:
     settings = Settings()
 
