@@ -22,7 +22,7 @@ Requisitos atendidos: RF22, RF23, RF24, RF25, RNF03, RNF07, RNF14, RNF16 e RNF18
 As seções "Contratos" e "Modelo de dados" deste plano resumem o que cada etapa precisa, para que o agente não dependa de ler os documentos inteiros.
 
 **Pré-requisitos (manuais, antes da Etapa 1)**
-- [ ] Criar o esqueleto do projeto com `uv init --package --name issue-publisher --python 3.12` (mesma base do issue-analyst-api: `config.py`, `logging.py`, `main.py`, ruff e pytest configurados) e commitar na `main` junto com este plano.
+- [x] Criar o esqueleto do projeto com `uv init --package --name issue-publisher --python 3.12` (mesma base do issue-analyst-api: `config.py`, `logging.py`, `main.py`, ruff e pytest configurados) e commitar na `main` junto com este plano. Concluído em 2026-11-12, commit 3f6462f.
 - [x] ~~Exportar os documentos de referência para `docs/referencias/`~~ Não se aplica (2026-11-12): as referências ficam em `../docs/doc-reference.md`, como no issue-analyst-api, e as seções "Contratos" e "Modelo de dados" deste plano trazem o que cada etapa precisa.
 - [x] Validar as "Decisões técnicas da implementação" e os "Pontos em aberto" que bloqueiam etapas (indicados em cada etapa). D1 a D11 validadas pelo usuário em 2026-11-12; os pontos em aberto restantes (P2, P3, P6) não bloqueiam etapas.
 
