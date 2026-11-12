@@ -165,13 +165,13 @@ Lidos, mas de outros donos (só existem nos testes pelo script de D11): a view `
 
 ### Etapa 1 — Fundação do worker
 Requisitos: RNF14, RNF18. Depende de: pré-requisitos. Pré-condição: decisões D1 a D5 e D10 validadas.
-- [ ] Adicionar dependências com `uv add`: `psycopg[binary,pool]`, `aio-pika`, `httpx`; e com `uv add --dev`: `testcontainers[postgres,rabbitmq]`, `respx`.
-- [ ] Completar `Settings` com as variáveis de "Contratos > Variáveis de ambiente" (`GITHUB_TOKEN` como `SecretStr` obrigatório; `PUBLISH_RETRY_DELAYS_S` lido como lista de inteiros a partir de `10,20`; `PUBLISH_MAX_TRIES` entre 1 e 3; a lista de atrasos precisa ter pelo menos `PUBLISH_MAX_TRIES - 1` valores) e ajustar os testes existentes.
-- [ ] Fazer `main.py` iniciar o worker com encerramento limpo em SIGTERM/SIGINT (D4); o consumo de verdade entra na Etapa 7.
-- [ ] Atualizar o `.env.example` (só nomes) e criar `docker-compose.yml` local com PostgreSQL e RabbitMQ para desenvolvimento.
-- [ ] Criar `Dockerfile` do serviço baseado em uv.
-- [ ] Testes: `Settings` falha sem `GITHUB_TOKEN`, com `PUBLISH_MAX_TRIES` fora de 1 a 3 e com lista de atrasos curta demais; o token não aparece no `repr` nem em log.
-- [ ] Atualizar o README com como subir o compose e iniciar o worker.
+- [x] Adicionar dependências com `uv add`: `psycopg[binary,pool]`, `aio-pika`, `httpx`; e com `uv add --dev`: `testcontainers[postgres,rabbitmq]`, `respx`.
+- [x] Completar `Settings` com as variáveis de "Contratos > Variáveis de ambiente" (`GITHUB_TOKEN` como `SecretStr` obrigatório; `PUBLISH_RETRY_DELAYS_S` lido como lista de inteiros a partir de `10,20`; `PUBLISH_MAX_TRIES` entre 1 e 3; a lista de atrasos precisa ter pelo menos `PUBLISH_MAX_TRIES - 1` valores) e ajustar os testes existentes.
+- [x] Fazer `main.py` iniciar o worker com encerramento limpo em SIGTERM/SIGINT (D4); o consumo de verdade entra na Etapa 7.
+- [x] Atualizar o `.env.example` (só nomes) e criar `docker-compose.yml` local com PostgreSQL e RabbitMQ para desenvolvimento.
+- [x] Criar `Dockerfile` do serviço baseado em uv.
+- [x] Testes: `Settings` falha sem `GITHUB_TOKEN`, com `PUBLISH_MAX_TRIES` fora de 1 a 3 e com lista de atrasos curta demais; o token não aparece no `repr` nem em log.
+- [x] Atualizar o README com como subir o compose e iniciar o worker.
 
 ### Etapa 2 — Schema publisher, migrações e dados de teste
 Requisitos: RNF07. Depende de: Etapa 1. Pré-condição: decisões D2 e D11 validadas.
