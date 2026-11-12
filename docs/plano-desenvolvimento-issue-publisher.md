@@ -295,10 +295,10 @@ Requisitos: RF22, RNF07. Depende de: Etapa 2.
 
 ### Etapa 5 — Reivindicação e pré-condições
 Requisitos: RF22, RNF03. Depende de: Etapa 4. Pré-condição: decisão D9 validada.
-- [ ] Reivindicação (passo 4): `INSERT ... ON CONFLICT (repository, issue_number, revision) DO NOTHING` com `state = PENDING`, `tries = 0` e as colunas de reivindicação da spec (`proposal_id`, `origin_event_id`, `kind`), seguida de `SELECT ... FOR UPDATE` na mesma transação.
-- [ ] Estado final já registrado (passo 5): encerrar sem chamar o GitHub.
-- [ ] Pré-condições (passo 6) e regras do corpo, encerrando em `FAILED (permanent)` com o código em `last_error` (spec e D9), sem chamar o GitHub.
-- [ ] Testes de integração com a porta falsa: repositório fora do catálogo (cenário 11); corpo sem marcador ou com marcador de outro evento (cenário 14); corpo vazio ou acima de 65.536 caracteres; proposta `INVALID`; caso fora de `READY_TO_PUBLISH`; linha já `PUBLISHED` ou `FAILED` não chama a porta; nenhum desses casos faz POST.
+- [x] Reivindicação (passo 4): `INSERT ... ON CONFLICT (repository, issue_number, revision) DO NOTHING` com `state = PENDING`, `tries = 0` e as colunas de reivindicação da spec (`proposal_id`, `origin_event_id`, `kind`), seguida de `SELECT ... FOR UPDATE` na mesma transação.
+- [x] Estado final já registrado (passo 5): encerrar sem chamar o GitHub.
+- [x] Pré-condições (passo 6) e regras do corpo, encerrando em `FAILED (permanent)` com o código em `last_error` (spec e D9), sem chamar o GitHub.
+- [x] Testes de integração com a porta falsa: repositório fora do catálogo (cenário 11); corpo sem marcador ou com marcador de outro evento (cenário 14); corpo vazio ou acima de 65.536 caracteres; proposta `INVALID`; caso fora de `READY_TO_PUBLISH`; linha já `PUBLISHED` ou `FAILED` não chama a porta; nenhum desses casos faz POST.
 
 ### Etapa 6 — Publicação com anti-duplicação
 Requisitos: RF23, RF24, RNF03. Depende de: Etapas 3 e 5.
