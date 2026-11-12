@@ -280,11 +280,11 @@ Requisitos: RNF07. Depende de: Etapa 1. Pré-condição: decisões D2 e D11 vali
 
 ### Etapa 3 — Porta do GitHub e cliente HTTP
 Requisitos: RF23, RF24, RF25, RNF16. Depende de: Etapa 1. Pré-condição: decisões D7 e D8 validadas.
-- [ ] Definir a porta `GitHubIssuesPort` em `domain/` com: identificar a conta, procurar comentário por marcador e autor, e criar comentário.
-- [ ] Implementar o adaptador httpx: headers e timeouts de "Contratos", paginação até a última página (header `Link`), e na criação devolver id, `html_url` e `created_at` em sucesso, ou um erro classificado.
-- [ ] Implementar a classificação de "Contratos > Classes de resposta", incluindo a leitura de `Retry-After` e `x-ratelimit-remaining`, e o formato de `last_error`.
-- [ ] Implementar uma porta falsa em memória para os testes dos próximos passos (comentários por issue, respostas programáveis por chamada, contagem de POSTs).
-- [ ] Testes com respx: paginação com marcador na última página; marcador de outro autor ignorado; cada linha da tabela de classes; timeout e erro de conexão como temporários; `Retry-After` lido; o token não aparece em log nem em mensagem de erro.
+- [x] Definir a porta `GitHubIssuesPort` em `domain/` com: identificar a conta, procurar comentário por marcador e autor, e criar comentário.
+- [x] Implementar o adaptador httpx: headers e timeouts de "Contratos", paginação até a última página (header `Link`), e na criação devolver id, `html_url` e `created_at` em sucesso, ou um erro classificado.
+- [x] Implementar a classificação de "Contratos > Classes de resposta", incluindo a leitura de `Retry-After` e `x-ratelimit-remaining`, e o formato de `last_error`.
+- [x] Implementar uma porta falsa em memória para os testes dos próximos passos (comentários por issue, respostas programáveis por chamada, contagem de POSTs).
+- [x] Testes com respx: paginação com marcador na última página; marcador de outro autor ignorado; cada linha da tabela de classes; timeout e erro de conexão como temporários; `Retry-After` lido; o token não aparece em log nem em mensagem de erro.
 
 ### Etapa 4 — Mensagem e leitura da proposta
 Requisitos: RF22, RNF07. Depende de: Etapa 2.
