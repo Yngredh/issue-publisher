@@ -135,6 +135,28 @@ async def test_claim_locks_the_row_until_commit(
             id="empty_body",
         ),
         pytest.param(
+            {"comment_body": "   \n\t  "},
+            "invalid_comment_body",
+            id="blank_body",
+        ),
+        pytest.param(
+            {
+                "origin_event_id": "evt-with-extra",
+                "comment_body": f"Triagem.\n\n{marker('evt-with-extra', 1)}\n"
+                f"{marker('evt-other', 1)}",
+            },
+            "marker_mismatch",
+            id="other_event_marker_next_to_the_right_one",
+        ),
+        pytest.param(
+            {
+                "origin_event_id": "evt-twice",
+                "comment_body": f"{marker('evt-twice', 1)}\n{marker('evt-twice', 1)}",
+            },
+            "marker_mismatch",
+            id="same_marker_twice",
+        ),
+        pytest.param(
             {"validation_status": "INVALID", "comment_body": None},
             "proposal_not_valid",
             id="invalid_proposal",

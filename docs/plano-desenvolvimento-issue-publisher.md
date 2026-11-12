@@ -304,16 +304,16 @@ Requisitos: RF22, RNF03. Depende de: Etapa 4. Pré-condição: decisão D9 valid
 
 ### Etapa 6 — Publicação com anti-duplicação
 Requisitos: RF23, RF24, RNF03. Depende de: Etapas 3 e 5. Pré-condição: decisões D12 e D13 validadas.
-- [ ] Correção da D13 na Etapa 3 (c): truncar em 500 caracteres o detalhe de erro vindo do `message` do GitHub ou da frase do status; teste com mensagem maior que 500.
-- [ ] Correção da D13 na Etapa 3 (e): comparar `user.login` com a conta do publisher sem diferenciar maiúsculas (`casefold`); teste com `GITHUB_BOT_LOGIN` em outra caixa.
-- [ ] Correção da D13 na Etapa 5 (j): corpo só com espaços → `invalid_comment_body`; ajustar o teste que hoje espera `marker_mismatch`.
-- [ ] Correção da D13 na Etapa 5 (k): contar todos os marcadores `<!-- triage:<eventId>:<revision> -->` do corpo; exatamente um e igual ao do caso e da revisão, senão `marker_mismatch`; testes com marcador de outro evento junto do correto e com dois marcadores iguais.
-- [ ] Passo 7: busca do marcador antes de todo POST; comentário encontrado com autor = conta do publisher → adota id, URL e `published_at` = `created_at` do comentário (D12), grava `PUBLISHED`, log `publish.marker_found`.
-- [ ] Passo 7, falha na busca (D12): não grava `publication_tries` nem incrementa `tries`; temporária → atualiza `last_error`, mantém `PENDING`, commit, resultado "nova tentativa" com o atraso da D12 e log de warning `publish.marker_search_failed`; permanente → `FAILED (permanent)` sem `POST`.
-- [ ] `last_error` atualizado a cada falha temporária do `POST` (D12).
-- [ ] Passo 8: POST, linha em `publication_tries` e `tries` incrementado na mesma transação.
-- [ ] Passo 9 para sucesso e falha permanente: 201 grava `PUBLISHED` com id, URL e `published_at`; permanente grava `FAILED (permanent)`. A falha temporária devolve o resultado "nova tentativa" ou, na última tentativa, `FAILED (retries_exhausted)`; o envio a `publish.retry` fica para a Etapa 7.
-- [ ] Testes de integração com a porta falsa: proposta pronta publica um comentário (cenário 1); descrição vazia publica o comentário-template (cenário 15); marcador colado por outro autor é ignorado (cenário 12); queda depois do POST e antes do commit, com reprocessamento que adota o comentário e totaliza um só (cenário 5); 403 de permissão vira `FAILED (permanent)` na 1ª tentativa (cenário 9); busca com timeout não muda `tries` nem `publication_tries` e devolve "nova tentativa" com atraso de `PUBLISH_RETRY_DELAYS_S[0]`; busca com 404 vira `FAILED (permanent)` sem `POST`; comentário adotado grava `published_at` do `created_at`; o `FAILED (retries_exhausted)` guarda o `last_error` da última falha.
+- [x] Correção da D13 na Etapa 3 (c): truncar em 500 caracteres o detalhe de erro vindo do `message` do GitHub ou da frase do status; teste com mensagem maior que 500.
+- [x] Correção da D13 na Etapa 3 (e): comparar `user.login` com a conta do publisher sem diferenciar maiúsculas (`casefold`); teste com `GITHUB_BOT_LOGIN` em outra caixa.
+- [x] Correção da D13 na Etapa 5 (j): corpo só com espaços → `invalid_comment_body`; ajustar o teste que hoje espera `marker_mismatch`.
+- [x] Correção da D13 na Etapa 5 (k): contar todos os marcadores `<!-- triage:<eventId>:<revision> -->` do corpo; exatamente um e igual ao do caso e da revisão, senão `marker_mismatch`; testes com marcador de outro evento junto do correto e com dois marcadores iguais.
+- [x] Passo 7: busca do marcador antes de todo POST; comentário encontrado com autor = conta do publisher → adota id, URL e `published_at` = `created_at` do comentário (D12), grava `PUBLISHED`, log `publish.marker_found`.
+- [x] Passo 7, falha na busca (D12): não grava `publication_tries` nem incrementa `tries`; temporária → atualiza `last_error`, mantém `PENDING`, commit, resultado "nova tentativa" com o atraso da D12 e log de warning `publish.marker_search_failed`; permanente → `FAILED (permanent)` sem `POST`.
+- [x] `last_error` atualizado a cada falha temporária do `POST` (D12).
+- [x] Passo 8: POST, linha em `publication_tries` e `tries` incrementado na mesma transação.
+- [x] Passo 9 para sucesso e falha permanente: 201 grava `PUBLISHED` com id, URL e `published_at`; permanente grava `FAILED (permanent)`. A falha temporária devolve o resultado "nova tentativa" ou, na última tentativa, `FAILED (retries_exhausted)`; o envio a `publish.retry` fica para a Etapa 7.
+- [x] Testes de integração com a porta falsa: proposta pronta publica um comentário (cenário 1); descrição vazia publica o comentário-template (cenário 15); marcador colado por outro autor é ignorado (cenário 12); queda depois do POST e antes do commit, com reprocessamento que adota o comentário e totaliza um só (cenário 5); 403 de permissão vira `FAILED (permanent)` na 1ª tentativa (cenário 9); busca com timeout não muda `tries` nem `publication_tries` e devolve "nova tentativa" com atraso de `PUBLISH_RETRY_DELAYS_S[0]`; busca com 404 vira `FAILED (permanent)` sem `POST`; comentário adotado grava `published_at` do `created_at`; o `FAILED (retries_exhausted)` guarda o `last_error` da última falha.
 
 ### Etapa 7 — Consumidor, retentativas e topologia das filas
 Requisitos: RF25, RNF03. Depende de: Etapa 6. Pré-condição: decisões D3 e D7 validadas.

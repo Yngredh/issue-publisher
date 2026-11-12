@@ -12,8 +12,8 @@ import httpx
 
 from issue_publisher.config import Settings
 from issue_publisher.domain.github import (
+    MAX_ERROR_DETAIL_LENGTH,
     GitHubComment,
-    GitHubError,
     classify_http_error,
     connection_error,
     timeout_error,
@@ -83,14 +83,19 @@ class HttpxGitHubIssues:
     async def find_comment_by_marker(
         self, repository: str, issue_number: int, marker: str, author: str
     ) -> GitHubComment | None:
-        """Percorre as páginas (header `Link`) até achar o marcador de `author` ou acabar."""
+        """Percorre as páginas (header `Link`) até achar o marcador de `author` ou acabar.
+
+        Para no primeiro comentário que bate; o login é comparado sem diferenciar maiúsculas
+        (`casefold`), porque o login do GitHub não diferencia (D13 e).
+        """
+        wanted = author.casefold()
         url: str | None = f"/repos/{repository}/issues/{issue_number}/comments"
         params: dict[str, Any] | None = {"per_page": COMMENTS_PER_PAGE}
         while url is not None:
             response = await self._request("GET", url, expected=200, params=params)
             for item in response.json():
-                login = (item.get("user") or {}).get("login")
-                if login == author and marker in (item.get("body") or ""):
+                login = str((item.get("user") or {}).get("login") or "")
+                if login.casefold() == wanted and marker in (item.get("body") or ""):
                     return _to_comment(item)
             url = response.links.get("next", {}).get("url")
             params = None  # a URL do `next` já traz a paginação
@@ -116,22 +121,20 @@ class HttpxGitHubIssues:
         except httpx.TransportError as exc:
             raise connection_error(type(exc).__name__) from None
         if response.status_code != expected:
-            raise self._redact(
-                classify_http_error(response.status_code, response.headers, _detail(response))
+            raise classify_http_error(
+                response.status_code, response.headers, self._safe_detail(response)
             )
         return response
 
-    def _redact(self, error: GitHubError) -> GitHubError:
-        """Garante que o token não saia no detalhe, mesmo se o GitHub o ecoar."""
-        if self._token and self._token in error.detail:
-            return GitHubError(
-                error.error_class,
-                error.code,
-                error.detail.replace(self._token, "***"),
-                http_status=error.http_status,
-                retry_after_s=error.retry_after_s,
-            )
-        return error
+    def _safe_detail(self, response: httpx.Response) -> str:
+        """Detalhe do erro sem o token (mesmo se o GitHub o ecoar), truncado em 500 (D13 c).
+
+        O token sai antes do corte, para que nenhum pedaço dele sobre no fim do texto.
+        """
+        detail = _detail(response)
+        if self._token:
+            detail = detail.replace(self._token, "***")
+        return detail[:MAX_ERROR_DETAIL_LENGTH]
 
 
 def _detail(response: httpx.Response) -> str:

@@ -6,19 +6,23 @@ commit. Nenhum destes passos chama o GitHub; os passos 7 a 9 continuam a partir 
 `ClaimOutcome.READY`.
 """
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Protocol
 
 import structlog
 
-from issue_publisher.domain.github import GitHubIssuesPort
+from issue_publisher.domain.github import GitHubComment, GitHubIssuesPort
 from issue_publisher.domain.publish import ProposalReader, PublishableProposal
 
 logger = structlog.get_logger()
 
 MAX_COMMENT_BODY_LENGTH = 65_536
 """Limite do corpo do comentário em caracteres (regras do corpo da spec)."""
+
+_ANY_MARKER = re.compile(r"<!-- triage:(\S+?):(\d+) -->")
+"""Qualquer marcador no formato `<!-- triage:<eventId>:<revision> -->` (D13 k)."""
 
 
 class PublicationState(StrEnum):
@@ -76,6 +80,20 @@ class PublicationStore(Protocol):
         """Grava `FAILED` com `failure_kind` e `last_error`."""
         ...
 
+    async def mark_published(self, publication_id: int, comment: GitHubComment) -> None:
+        """Grava `PUBLISHED` com id, URL e `published_at` (`created_at` do comentário)."""
+        ...
+
+    async def record_try(
+        self, publication_id: int, try_number: int, http_status: int | None, error: str | None
+    ) -> None:
+        """Passo 8: grava a linha de `publication_tries` e incrementa `tries`."""
+        ...
+
+    async def set_last_error(self, publication_id: int, last_error: str) -> None:
+        """Atualiza `last_error` sem mudar o estado (falha temporária, D12)."""
+        ...
+
 
 @dataclass(frozen=True)
 class PreconditionViolation:
@@ -119,8 +137,10 @@ async def check_preconditions(
     1. `validation_status = 'VALID'` e `comment_body` presente → senão `proposal_not_valid`.
     2. Caso em `READY_TO_PUBLISH` → senão `case_not_ready`.
     3. Repositório em `catalog.projects` → senão `repository_not_in_catalog`.
-    4. Corpo não vazio e com até 65.536 caracteres → senão `invalid_comment_body`.
-    5. Exatamente um marcador `<!-- triage:<origin_event_id>:<revision> -->` → senão
+    4. Corpo não vazio, nem só com espaços (D13 j), e com até 65.536 caracteres → senão
+       `invalid_comment_body`.
+    5. Exatamente um marcador no formato `<!-- triage:<eventId>:<revision> -->`, contando
+       qualquer evento e revisão, e igual ao do caso e da revisão (D13 k) → senão
        `marker_mismatch`.
     """
     if proposal.validation_status != "VALID":
@@ -140,18 +160,23 @@ async def check_preconditions(
             PreconditionCode.REPOSITORY_NOT_IN_CATALOG,
             f"{proposal.repository} is not in catalog.projects",
         )
-    if body == "":
+    if not body.strip():
         return PreconditionViolation(PreconditionCode.INVALID_COMMENT_BODY, "comment_body is empty")
     if len(body) > MAX_COMMENT_BODY_LENGTH:
         return PreconditionViolation(
             PreconditionCode.INVALID_COMMENT_BODY,
             f"comment_body has {len(body)} characters (max {MAX_COMMENT_BODY_LENGTH})",
         )
-    occurrences = body.count(build_marker(proposal.origin_event_id, proposal.revision))
-    if occurrences != 1:
+    markers = [match.group(0) for match in _ANY_MARKER.finditer(body)]
+    if len(markers) != 1:
         return PreconditionViolation(
             PreconditionCode.MARKER_MISMATCH,
-            f"expected exactly one marker for this event and revision, found {occurrences}",
+            f"expected exactly one marker, found {len(markers)}",
+        )
+    if markers[0] != build_marker(proposal.origin_event_id, proposal.revision):
+        return PreconditionViolation(
+            PreconditionCode.MARKER_MISMATCH,
+            "marker does not match the case event and revision",
         )
     return None
 

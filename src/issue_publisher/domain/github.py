@@ -11,6 +11,9 @@ from email.utils import parsedate_to_datetime
 from enum import StrEnum
 from typing import Protocol
 
+MAX_ERROR_DETAIL_LENGTH = 500
+"""Limite do detalhe de erro do GitHub (`message` ou frase do status), em caracteres (D13 c)."""
+
 
 class ErrorClass(StrEnum):
     """Classe da falha, conforme "Contratos > Classes de resposta do GitHub"."""

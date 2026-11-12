@@ -257,3 +257,53 @@ async def test_token_never_in_logs_or_errors(
     assert TOKEN not in caplog.text
     assert TOKEN not in repr(logs)
     assert TOKEN not in repr(client)
+
+
+async def test_error_detail_is_truncated_to_500_characters(
+    client: HttpxGitHubIssues, api: respx.MockRouter
+) -> None:
+    long_message = "a" * 499 + "b" + "c" * 300
+    api.post(COMMENTS_PATH).respond(422, json={"message": long_message})
+
+    with pytest.raises(GitHubError) as raised:
+        await client.create_comment(REPO, ISSUE, "corpo")
+
+    assert raised.value.detail == long_message[:500]
+    assert len(raised.value.detail) == 500
+    assert raised.value.last_error == f"http_422: {'a' * 499}b"
+
+
+async def test_token_is_redacted_before_truncation(api: respx.MockRouter) -> None:
+    # O token começa antes do caractere 500: nenhum pedaço dele pode sobrar no detalhe.
+    message = "x" * 490 + TOKEN + "y" * 100
+    api.post(COMMENTS_PATH).respond(401, json={"message": message})
+
+    async with HttpxGitHubIssues(token=TOKEN, api_url=API) as github:
+        with pytest.raises(GitHubError) as raised:
+            await github.create_comment(REPO, ISSUE, "corpo")
+
+    assert raised.value.detail == ("x" * 490 + "***" + "y" * 100)[:500]
+    assert TOKEN[:5] not in raised.value.detail
+
+
+async def test_bot_login_is_compared_case_insensitively(api: respx.MockRouter) -> None:
+    api.get(COMMENTS_PATH).respond(200, json=[comment(5, "triage-bot", f"Triagem\n\n{MARKER}")])
+
+    async with HttpxGitHubIssues(token=TOKEN, api_url=API, bot_login="Triage-BOT") as github:
+        account = await github.identify_account()
+        found = await github.find_comment_by_marker(REPO, ISSUE, MARKER, account)
+
+    assert account == "Triage-BOT"
+    assert found is not None
+    assert found.id == 5
+
+
+async def test_search_stops_at_first_matching_comment(
+    client: HttpxGitHubIssues, api: respx.MockRouter
+) -> None:
+    api.get(COMMENTS_PATH).respond(200, json=[comment(6, BOT, MARKER), comment(7, BOT, MARKER)])
+
+    found = await client.find_comment_by_marker(REPO, ISSUE, MARKER, BOT)
+
+    assert found is not None
+    assert found.id == 6

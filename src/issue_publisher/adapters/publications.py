@@ -7,6 +7,7 @@ Recebe a conexão de fora: quem chama abre a transação que cobre a tentativa i
 from psycopg import AsyncConnection
 from psycopg.rows import class_row
 
+from issue_publisher.domain.github import GitHubComment
 from issue_publisher.domain.publication import FailureKind, Publication, PublicationState
 from issue_publisher.domain.publish import PublishableProposal
 
@@ -27,6 +28,22 @@ _MARK_FAILED = """
 UPDATE publisher.publications
 SET state = %s, failure_kind = %s, last_error = %s, updated_at = now()
 WHERE id = %s
+"""
+_MARK_PUBLISHED = """
+UPDATE publisher.publications
+SET state = %s, github_comment_id = %s, github_comment_url = %s, published_at = %s,
+    updated_at = now()
+WHERE id = %s
+"""
+_INSERT_TRY = """
+INSERT INTO publisher.publication_tries (publication_id, try_number, http_status, error)
+VALUES (%s, %s, %s, %s)
+"""
+_INCREMENT_TRIES = """
+UPDATE publisher.publications SET tries = tries + 1, updated_at = now() WHERE id = %s
+"""
+_SET_LAST_ERROR = """
+UPDATE publisher.publications SET last_error = %s, updated_at = now() WHERE id = %s
 """
 
 
@@ -65,3 +82,24 @@ class PostgresPublicationStore:
             _MARK_FAILED,
             (PublicationState.FAILED.value, failure_kind.value, last_error, publication_id),
         )
+
+    async def mark_published(self, publication_id: int, comment: GitHubComment) -> None:
+        await self._conn.execute(
+            _MARK_PUBLISHED,
+            (
+                PublicationState.PUBLISHED.value,
+                comment.id,
+                comment.html_url,
+                comment.created_at,
+                publication_id,
+            ),
+        )
+
+    async def record_try(
+        self, publication_id: int, try_number: int, http_status: int | None, error: str | None
+    ) -> None:
+        await self._conn.execute(_INSERT_TRY, (publication_id, try_number, http_status, error))
+        await self._conn.execute(_INCREMENT_TRIES, (publication_id,))
+
+    async def set_last_error(self, publication_id: int, last_error: str) -> None:
+        await self._conn.execute(_SET_LAST_ERROR, (last_error, publication_id))

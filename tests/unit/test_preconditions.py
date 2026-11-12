@@ -62,6 +62,7 @@ async def test_body_at_limit_passes() -> None:
         ({"case_status": "NEEDS_REVIEW"}, PreconditionCode.CASE_NOT_READY),
         ({"repository": "acme/other"}, PreconditionCode.REPOSITORY_NOT_IN_CATALOG),
         ({"comment_body": ""}, PreconditionCode.INVALID_COMMENT_BODY),
+        ({"comment_body": " \n\t "}, PreconditionCode.INVALID_COMMENT_BODY),
         (
             {"comment_body": MARKER + "x" * MAX_COMMENT_BODY_LENGTH},
             PreconditionCode.INVALID_COMMENT_BODY,
@@ -70,6 +71,14 @@ async def test_body_at_limit_passes() -> None:
         ({"comment_body": build_marker("evt-2", 2)}, PreconditionCode.MARKER_MISMATCH),
         ({"comment_body": build_marker("evt-1", 1)}, PreconditionCode.MARKER_MISMATCH),
         ({"comment_body": f"{MARKER}\n{MARKER}"}, PreconditionCode.MARKER_MISMATCH),
+        (
+            {"comment_body": f"{MARKER}\n{build_marker('evt-2', 2)}"},
+            PreconditionCode.MARKER_MISMATCH,
+        ),
+        (
+            {"comment_body": f"{build_marker('evt-1', 1)}\n{MARKER}"},
+            PreconditionCode.MARKER_MISMATCH,
+        ),
     ],
 )
 async def test_violations(changes: dict[str, object], code: PreconditionCode) -> None:

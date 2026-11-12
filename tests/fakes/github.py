@@ -82,7 +82,8 @@ class FakeGitHubIssues:
             if programmed is not None:
                 raise programmed
         for comment in self.comments[(repository, issue_number)]:
-            if comment.author == author and marker in comment.body:
+            # Como o adaptador real: login sem diferenciar maiúsculas (D13 e).
+            if comment.author.casefold() == author.casefold() and marker in comment.body:
                 return comment.to_comment()
         return None
 
