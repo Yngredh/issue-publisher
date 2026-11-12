@@ -162,3 +162,37 @@ def make_proposal(db_conn: psycopg.Connection) -> Callable[..., SeededProposal]:
         return seed_proposal(db_conn, **kwargs)  # type: ignore[arg-type]
 
     return factory
+
+
+@pytest.fixture
+def make_committed_proposal(database_url: str) -> Iterator[Callable[..., SeededProposal]]:
+    """Fábrica que grava os dados de teste de verdade (visíveis a outras conexões).
+
+    Para testes que usam o pool ou conexões assíncronas próprias. Ao fim do teste apaga o
+    que criou, inclusive linhas de `publisher` ligadas às propostas criadas.
+    """
+    created: list[SeededProposal] = []
+
+    def factory(**kwargs: object) -> SeededProposal:
+        with psycopg.connect(database_url) as conn:
+            seeded = seed_proposal(conn, **kwargs)  # type: ignore[arg-type]
+        created.append(seeded)
+        return seeded
+
+    yield factory
+
+    with psycopg.connect(database_url) as conn:
+        for seeded in created:
+            conn.execute(
+                "DELETE FROM publisher.publication_tries WHERE publication_id IN "
+                "(SELECT id FROM publisher.publications WHERE proposal_id = %s)",
+                (seeded.proposal_id,),
+            )
+            conn.execute(
+                "DELETE FROM publisher.publications WHERE proposal_id = %s", (seeded.proposal_id,)
+            )
+            conn.execute("DELETE FROM triage.proposals WHERE id = %s", (seeded.proposal_id,))
+            conn.execute(
+                "DELETE FROM triage.analysis_attempts WHERE id = %s", (seeded.attempt_id,)
+            )
+            conn.execute("DELETE FROM triage.issue_cases WHERE id = %s", (seeded.case_id,))

@@ -288,10 +288,10 @@ Requisitos: RF23, RF24, RF25, RNF16. Depende de: Etapa 1. Pré-condição: decis
 
 ### Etapa 4 — Mensagem e leitura da proposta
 Requisitos: RF22, RNF07. Depende de: Etapa 2.
-- [ ] Modelo Pydantic da mensagem `publish` (`extra = "forbid"`, `revision >= 1`).
-- [ ] Repositório de leitura da view `triage.publishable_proposals` por `proposal_id` e da presença do repositório em `catalog.projects`.
-- [ ] Passos 1 a 3 do processamento como lógica testável sem broker: schema inválido, proposta inexistente ou `revision` diferente → descartar; `revision < current_attempt` → obsoleta.
-- [ ] Testes unitários do modelo e testes de integração dos passos 1 a 3 com o stub, confirmando que nenhum desses casos cria linha em `publications`.
+- [x] Modelo Pydantic da mensagem `publish` (`extra = "forbid"`, `revision >= 1`).
+- [x] Repositório de leitura da view `triage.publishable_proposals` por `proposal_id` e da presença do repositório em `catalog.projects`.
+- [x] Passos 1 a 3 do processamento como lógica testável sem broker: schema inválido, proposta inexistente ou `revision` diferente → descartar; `revision < current_attempt` → obsoleta.
+- [x] Testes unitários do modelo e testes de integração dos passos 1 a 3 com o stub, confirmando que nenhum desses casos cria linha em `publications`.
 
 ### Etapa 5 — Reivindicação e pré-condições
 Requisitos: RF22, RNF03. Depende de: Etapa 4. Pré-condição: decisão D9 validada.
