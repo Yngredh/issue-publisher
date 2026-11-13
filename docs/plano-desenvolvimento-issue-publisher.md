@@ -335,9 +335,9 @@ Requisitos: RNF14. Depende de: Etapa 7. Pré-condição: decisão D14 validada.
 
 ### Etapa 9 — Resiliência, ferramentas locais e demonstração
 Requisitos: RF22 a RF25, RNF16. Depende de: Etapa 8.
-- [ ] Criar `scripts/publish_message.py`, que envia uma mensagem `{"proposalId", "revision"}` para a fila `publish` (ferramenta de desenvolvimento).
-- [ ] Testes de ponta a ponta do worker (PostgreSQL e RabbitMQ reais, porta falsa): mensagens acumuladas com o worker parado são publicadas quando ele volta (cenário 6, parte do publisher); queda do broker durante o consumo não perde a mensagem.
-- [ ] README: como rodar localmente, migrar, enviar mensagens de teste, rodar os testes e o que é real ou simulado em cada teste.
+- [x] Criar `scripts/publish_message.py`, que envia uma mensagem `{"proposalId", "revision"}` para a fila `publish` (ferramenta de desenvolvimento).
+- [x] Testes de ponta a ponta do worker (PostgreSQL e RabbitMQ reais, porta falsa): mensagens acumuladas com o worker parado são publicadas quando ele volta (cenário 6, parte do publisher); queda do broker durante o consumo não perde a mensagem.
+- [x] README: como rodar localmente, migrar, enviar mensagens de teste, rodar os testes e o que é real ou simulado em cada teste.
 - [ ] (manual) Criar o token fine-grained da conta de teste com permissão de escrita em issues só no repositório de teste e configurá-lo no `.env`.
 - [ ] (manual) Publicar um comentário real no repositório de teste e conferir id e URL gravados (cenário 1 real).
 - [ ] (manual) Depois que o `issue-triage` existir, executar o fluxo completo: webhook reenviado não gera comentário novo (cenário 3) e publisher parado com a análise funcionando (cenário 6).
