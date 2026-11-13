@@ -149,6 +149,9 @@ async def test_published_flow_logs_received_try_and_published(
 
     assert message.calls == ["ack"]
     assert events(logs) == ["publish.received", "publish.try", "publish.published"]
+    received = only(logs, "publish.received")
+    assert received["proposal_id"] == seeded.proposal_id
+    assert received["revision"] == seeded.revision
     for event in ("publish.try", "publish.published"):
         assert_case_fields(only(logs, event), seeded)
     assert only(logs, "publish.try")["try_number"] == 1
@@ -273,7 +276,8 @@ async def test_invalid_messages_log_discarded_invalid(
     invalid_logs, _ = await handle(handler, b"not json")
     mismatch_logs, _ = await handle(handler, body_of(seeded, revision=seeded.revision + 1))
 
-    assert events(invalid_logs) == ["publish.received", "publish.discarded_invalid"]
+    # D15: `publish.received` só sai depois de validar o schema.
+    assert events(invalid_logs) == ["publish.discarded_invalid"]
     assert events(mismatch_logs) == ["publish.received", "publish.discarded_invalid"]
     discarded = only(mismatch_logs, "publish.discarded_invalid")
     assert discarded["event_id"] == seeded.origin_event_id

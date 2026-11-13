@@ -46,6 +46,8 @@ class FakeGitHubIssues:
         self.comments: dict[tuple[str, int], list[StoredComment]] = defaultdict(list)
         self.create_responses: deque[CreateResponse] = deque()
         self.find_responses: deque[GitHubError | None] = deque()
+        self.identify_responses: deque[GitHubError | None] = deque()
+        self.identify_count = 0
         self.post_count = 0
         self.find_count = 0
         self.posts: list[tuple[str, int, str]] = []
@@ -63,6 +65,10 @@ class FakeGitHubIssues:
         """Enfileira as respostas das próximas buscas; `None` busca normalmente."""
         self.find_responses.extend(responses)
 
+    def program_identify(self, *responses: GitHubError | None) -> None:
+        """Enfileira as respostas dos próximos `GET /user`; `None` devolve o login normalmente."""
+        self.identify_responses.extend(responses)
+
     def add_comment(
         self, repository: str, issue_number: int, body: str, author: str
     ) -> GitHubComment:
@@ -75,6 +81,11 @@ class FakeGitHubIssues:
     # GitHubIssuesPort ----------------------------------------------------------------------
 
     async def identify_account(self) -> str:
+        self.identify_count += 1
+        if self.identify_responses:
+            programmed = self.identify_responses.popleft()
+            if programmed is not None:
+                raise programmed
         return self.bot_login
 
     async def find_comment_by_marker(

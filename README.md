@@ -56,6 +56,37 @@ docker compose exec -T postgres psql -U postgres -d issue_publisher < tests/fixt
 Na subida o worker identifica a conta do GitHub (`GET /user`, ou `GITHUB_BOT_LOGIN`), declara a
 fila `publish.retry` e espera a fila `publish` existir (quem a declara é o `issue-triage`).
 
+`GET /user` na subida: falha temporária (timeout, erro de conexão, 5xx, 429, 403 com limite de
+taxa) tenta de novo com backoff de 1 s, dobrando até 30 s, e log de warning
+`worker.identify_failed`, até dar certo ou vir o pedido de parada; falha permanente (401, 403 de
+permissão, demais 4xx) gera o log de erro `worker.identify_failed` e encerra o processo com código
+de saída 1, sem conectar ao broker. O log leva `failure_kind`, `http_status`, `last_error` e, na
+falha temporária, `backoff_s`.
+
+Se o broker cair com uma mensagem em curso, o processamento termina mesmo assim (o `POST` e o
+commit são protegidos do cancelamento): só o ack falha, com o log de warning `publish.ack_failed`
+e sem backoff. A mensagem volta para a fila quando o broker retorna, e a reentrega encontra a
+publicação já `PUBLISHED`, sem chamar o GitHub de novo.
+
+## Logs
+
+JSON em stdout. Todo log de mensagem leva `event_id`, `repository`, `issue_number` e `revision`,
+quando já conhecidos. Eventos:
+
+| Evento | Quando |
+|---|---|
+| `publish.received` | mensagem com schema válido (leva `proposal_id` e `revision`); mensagem inválida gera só `publish.discarded_invalid` |
+| `publish.discarded_invalid` | schema inválido, proposta inexistente ou `revision` diferente da view |
+| `publish.skipped_stale` | `revision` menor que a tentativa atual do caso |
+| `publish.marker_found` | comentário com o marcador já existe na issue e é adotado |
+| `publish.marker_search_failed` | falha na busca do marcador (não consome tentativa) |
+| `publish.try`, `publish.published`, `publish.failed` | tentativa de `POST`, sucesso e falha final |
+| `publish.retry_scheduled` | cópia enviada para `publish.retry` com o atraso |
+| `publish.processing_failed` | exceção no processamento (banco ou broker fora): espera o backoff e devolve a mensagem |
+| `publish.requeue_failed` | o nack da devolução falhou porque o canal já caiu |
+| `publish.ack_failed` | o ack falhou depois do commit (canal caído); sem backoff |
+| `worker.identify_failed` | falha no `GET /user` da subida (warning se temporária, erro se permanente) |
+
 Com a imagem Docker:
 
 ```bash

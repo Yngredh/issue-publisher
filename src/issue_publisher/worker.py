@@ -20,13 +20,21 @@ from issue_publisher.consumer import (
     MessageHandler,
     sleep_unless,
 )
-from issue_publisher.domain.github import GitHubIssuesPort
+from issue_publisher.domain.github import GitHubError, GitHubIssuesPort
 from issue_publisher.domain.publishing import RetryPolicy
 
 logger = structlog.get_logger()
 
 DEFAULT_BACKOFF_INITIAL_S = 1.0
 DEFAULT_BACKOFF_MAX_S = 30.0
+
+
+class AccountIdentificationError(Exception):
+    """Falha permanente ao identificar a conta do publisher na subida (D15, item 3)."""
+
+    def __init__(self, error: GitHubError) -> None:
+        self.error = error
+        super().__init__(error.last_error)
 
 
 def install_stop_handlers(loop: asyncio.AbstractEventLoop, stop: Callable[[], None]) -> None:
@@ -45,9 +53,11 @@ def install_stop_handlers(loop: asyncio.AbstractEventLoop, stop: Callable[[], No
 class Worker:
     """Worker sem HTTP do issue-publisher (D4), consumidor da fila `publish` (RF25, RNF03).
 
-    Na subida identifica a conta do publisher, declara `publish.retry` e consome `publish` com
-    declaração passiva, tentando de novo com backoff enquanto ela não existir (D6). Ao receber o
-    pedido de parada, deixa de consumir, termina a mensagem em curso e fecha as conexões.
+    Na subida identifica a conta do publisher (falha temporária no `GET /user` tenta de novo com
+    backoff; falha permanente encerra com `AccountIdentificationError`, D15), declara
+    `publish.retry` e consome `publish` com declaração passiva, tentando de novo com backoff
+    enquanto ela não existir (D6). Ao receber o pedido de parada, deixa de consumir, termina a
+    mensagem em curso e fecha as conexões.
 
     `github` e `connections` permitem injetar a porta falsa e o banco nos testes; sem eles, o
     worker cria o cliente httpx e o pool do psycopg a partir do `Settings`.
@@ -81,7 +91,11 @@ class Worker:
             self._stop.set()
 
     async def run(self) -> None:
-        """Executa até o pedido de parada."""
+        """Executa até o pedido de parada.
+
+        Levanta `AccountIdentificationError` se o `GET /user` falhar de forma permanente, antes
+        de conectar ao broker.
+        """
         logger.info("worker.started", log_level=self._settings.LOG_LEVEL)
         owned_github = None
         github = self._github
@@ -95,7 +109,9 @@ class Worker:
             connections = pool
         connection: AbstractRobustConnection | None = None
         try:
-            account = await github.identify_account()
+            account = await self._identify_account(github)
+            if account is None:
+                return
             connection = await self._connect()
             if connection is not None:
                 await self._consume(connection, connections, github, account)
@@ -107,6 +123,37 @@ class Worker:
             if owned_github is not None:
                 await owned_github.aclose()
             logger.info("worker.stopped")
+
+    async def _identify_account(self, github: GitHubIssuesPort) -> str | None:
+        """Identifica a conta do publisher (D15, item 3); `None` se a parada vier antes.
+
+        Falha temporária (timeout, erro de conexão, 5xx, 429, 403 com limite de taxa) tenta de
+        novo com backoff e log de warning `worker.identify_failed`; falha permanente registra
+        `worker.identify_failed` como erro e levanta `AccountIdentificationError`.
+        """
+        backoff = self._backoff()
+        while not self._stop.is_set():
+            try:
+                return await github.identify_account()
+            except GitHubError as error:
+                if not error.temporary:
+                    logger.error(
+                        "worker.identify_failed",
+                        failure_kind=error.error_class.value,
+                        http_status=error.http_status,
+                        last_error=error.last_error,
+                    )
+                    raise AccountIdentificationError(error) from error
+                delay = backoff.next_delay()
+                logger.warning(
+                    "worker.identify_failed",
+                    failure_kind=error.error_class.value,
+                    http_status=error.http_status,
+                    last_error=error.last_error,
+                    backoff_s=delay,
+                )
+                await self._wait(delay)
+        return None
 
     async def _connect(self) -> AbstractRobustConnection | None:
         """Conecta ao RabbitMQ, tentando de novo com backoff; `None` se a parada vier antes."""

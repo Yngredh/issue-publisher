@@ -17,6 +17,7 @@ from testcontainers.community.rabbitmq import RabbitMqContainer
 
 from issue_publisher.config import Settings
 from issue_publisher.consumer import RETRY_QUEUE
+from issue_publisher.domain.github import ErrorClass, GitHubError
 from issue_publisher.worker import Worker
 from tests.conftest import SeededProposal
 from tests.fakes.github import FakeGitHubIssues
@@ -97,10 +98,12 @@ async def test_broker_outage_during_consumption_does_not_lose_the_message(
     make_settings: Callable[..., Settings],  # noqa: F811
     make_committed_proposal: Callable[..., SeededProposal],
 ) -> None:
-    """O broker cai com a mensagem em curso: ela não é confirmada, volta e é publicada.
+    """O broker cai com a mensagem em curso: ela não se perde nem gera um segundo comentário.
 
-    Com a conexão perdida, o processamento em curso é interrompido antes do commit (a transação
-    é desfeita) e a mensagem não confirmada volta para a fila durável quando o broker retorna.
+    O POST em curso termina com o broker fora e o commit no banco é feito (`PUBLISHED`,
+    `tries = 1`); só o ack falha, porque o canal caiu. A mensagem não confirmada volta para a
+    fila durável quando o broker retorna, e a reentrega encontra `PUBLISHED` no passo 5:
+    confirma sem chamar o GitHub de novo (D15).
     """
     seeded = make_committed_proposal()
     github = FakeGitHubIssues(bot_login=BOT, create_delay_s=3)
@@ -121,14 +124,49 @@ async def test_broker_outage_during_consumption_does_not_lose_the_message(
     # A mensagem foi entregue de novo depois que o broker voltou e terminou confirmada.
     assert sum(log["event"] == "publish.received" for log in logs) == 2
     assert sum(log["event"] == "publish.published" for log in logs) == 1
-    # Um só comentário na issue: a reentrega começa pela busca do marcador (passo 7).
+    # O commit foi feito com o canal caído: só o ack falhou, sem `publish.processing_failed`.
+    assert sum(log["event"] == "publish.ack_failed" for log in logs) == 1
+    assert not any(log["event"] == "publish.processing_failed" for log in logs)
+    # Um só POST e um só comentário: a reentrega encontra `PUBLISHED` no passo 5.
+    assert github.post_count == 1
     assert len(github.comments_on(seeded.repository, seeded.issue_number)) == 1
     row = publication_row(database_url, seeded.proposal_id)
     assert row is not None
+    assert row["tries"] == 1
     assert row["github_comment_id"] == github.comments_on(
         seeded.repository, seeded.issue_number
     )[0].id
     assert await ready_count(broker, RETRY_QUEUE) == 0
+    assert TOKEN not in repr(logs)
+
+
+async def test_temporary_identify_failure_retries_and_then_consumes(
+    database_url: str,
+    rabbitmq_url: str,
+    broker: AbstractRobustConnection,  # noqa: F811
+    make_settings: Callable[..., Settings],  # noqa: F811
+    make_committed_proposal: Callable[..., SeededProposal],
+) -> None:
+    """D15, item 3: 503 no `GET /user` tenta de novo; com o 200, o worker segue e consome."""
+    seeded = make_committed_proposal()
+    github = FakeGitHubIssues(bot_login=BOT)
+    github.program_identify(
+        GitHubError(ErrorClass.TEMPORARY, "http_503", "Service Unavailable", http_status=503),
+        None,
+    )
+    worker = Worker(make_settings(), github=github, backoff_initial_s=0.1, backoff_max_s=0.5)
+
+    with structlog.testing.capture_logs() as logs:
+        async with running_worker(worker):
+            await send_with_script(rabbitmq_url, seeded)
+            await wait_until(state_is(database_url, seeded.proposal_id, "PUBLISHED"))
+
+    assert github.identify_count == 2
+    failures = [log for log in logs if log["event"] == "worker.identify_failed"]
+    assert len(failures) == 1
+    assert failures[0]["log_level"] == "warning"
+    assert failures[0]["http_status"] == 503
+    assert github.post_count == 1
     assert TOKEN not in repr(logs)
 
 

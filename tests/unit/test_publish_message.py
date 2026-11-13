@@ -95,13 +95,18 @@ async def test_invalid_schema_is_discarded_without_reading() -> None:
         result = await screen_message(b'{"proposalId": 5}', reader)
     assert result.outcome is ScreenOutcome.DISCARDED_INVALID
     assert reader.lookups == []
-    assert [log["event"] for log in logs] == ["publish.received", "publish.discarded_invalid"]
+    # D15: mensagem inválida gera só `publish.discarded_invalid`.
+    assert [log["event"] for log in logs] == ["publish.discarded_invalid"]
 
 
 async def test_missing_proposal_is_discarded() -> None:
-    result = await screen_message(b'{"proposalId": 5, "revision": 1}', FakeReader({}))
+    with structlog.testing.capture_logs() as logs:
+        result = await screen_message(b'{"proposalId": 5, "revision": 1}', FakeReader({}))
     assert result.outcome is ScreenOutcome.DISCARDED_INVALID
     assert result.proposal is None
+    assert [log["event"] for log in logs] == ["publish.received", "publish.discarded_invalid"]
+    assert logs[0]["proposal_id"] == 5
+    assert logs[0]["revision"] == 1
 
 
 async def test_revision_mismatch_is_discarded() -> None:
@@ -142,6 +147,8 @@ async def test_current_revision_proceeds() -> None:
     assert result.proposal == proposal
     assert result.message == PublishMessage(proposalId=5, revision=1)
     assert [log["event"] for log in logs] == ["publish.received"]
+    assert logs[0]["proposal_id"] == 5
+    assert logs[0]["revision"] == 1
 
 
 async def test_case_context_is_bound_once_the_proposal_is_known() -> None:

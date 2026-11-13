@@ -4,7 +4,8 @@ Abre a transação que cobre a tentativa inteira, roda os passos 1 a 3 (`screen_
 (`publish_proposal`), faz o commit e só depois confirma a mensagem. Na nova tentativa, publica a
 cópia em `publish.retry` com a expiração da D7 (ou da D12) e confirmação do broker, e só então
 confirma a original. Banco ou broker indisponível: a mensagem não é confirmada e volta para a
-fila, sem gastar tentativa (a transação é desfeita).
+fila, sem gastar tentativa (a transação é desfeita). Se o canal cair com a mensagem em curso, o
+tratamento é protegido do cancelamento: o `POST` e o commit terminam e só o ack falha (D15).
 """
 
 import asyncio
@@ -126,13 +127,37 @@ class MessageHandler:
                 return ProcessResult(screen.outcome, screen.proposal, result)
 
     async def __call__(self, message: AbstractIncomingMessage) -> None:
-        """Processa, faz o commit e só então confirma; falha de infraestrutura não confirma."""
+        """Trata a mensagem protegida do cancelamento do aio-pika (D4, D15).
+
+        Quando o canal cai, o aio-pika cancela o callback em curso. O tratamento roda numa tarefa
+        protegida por `asyncio.shield`: o `POST` e o commit terminam e só o ack falha. O
+        cancelamento é repassado depois que o tratamento acaba, e a reentrega encontra o
+        resultado gravado (`PUBLISHED` no passo 5).
+        """
+        handling = asyncio.ensure_future(self._handle(message))
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(handling)
+                break
+            except asyncio.CancelledError:
+                if handling.done():
+                    raise
+                cancelled = True
+        if cancelled:
+            raise asyncio.CancelledError
+
+    async def _handle(self, message: AbstractIncomingMessage) -> None:
+        """Processa, faz o commit e só então confirma; falha de infraestrutura não confirma.
+
+        Ack que falha depois do commit gera `publish.ack_failed`, sem backoff: o resultado já
+        está gravado e a mensagem volta sozinha para a fila quando o canal cai.
+        """
         try:
             result = await self.process(message.body)
             delay_s = result.retry_delay_s
             if delay_s is not None:
                 await self._schedule_retry(message, result, delay_s)
-            await message.ack()
         except Exception as error:  # qualquer falha: não confirma a mensagem
             delay = self._backoff.next_delay()
             logger.warning("publish.processing_failed", error=type(error).__name__, backoff_s=delay)
@@ -140,6 +165,10 @@ class MessageHandler:
             await _requeue(message)
             return
         self._backoff.reset()
+        try:
+            await message.ack()
+        except Exception as error:  # canal fechado: o broker devolve a mensagem sozinho
+            logger.warning("publish.ack_failed", error=type(error).__name__)
 
     async def _schedule_retry(
         self, message: AbstractIncomingMessage, result: ProcessResult, delay_s: float

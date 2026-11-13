@@ -97,18 +97,20 @@ def parse_message(body: bytes | str) -> PublishMessage | None:
 async def screen_message(body: bytes | str, reader: ProposalReader) -> ScreenResult:
     """Passos 1 a 3 do processamento, sem broker e sem escrever no banco.
 
-    Registra `publish.received` ao começar. Com a proposta lida e a `revision` conferida,
-    liga `event_id`, `repository`, `issue_number` e `revision` ao contexto do structlog.
+    Registra `publish.received`, com `proposal_id` e `revision`, só depois de validar o schema
+    (D15); mensagem inválida gera só `publish.discarded_invalid`. Com a proposta lida e a
+    `revision` conferida, liga `event_id`, `repository`, `issue_number` e `revision` ao
+    contexto do structlog.
 
     1. Schema inválido → descartar (`publish.discarded_invalid`).
     2. Proposta inexistente ou `revision` diferente da view → descartar.
     3. `revision < current_attempt` → obsoleta (`publish.skipped_stale`).
     """
-    logger.info("publish.received")
     message = parse_message(body)
     if message is None:
         logger.info("publish.discarded_invalid")
         return ScreenResult(ScreenOutcome.DISCARDED_INVALID)
+    logger.info("publish.received", proposal_id=message.proposal_id, revision=message.revision)
 
     proposal = await reader.get_publishable_proposal(message.proposal_id)
     if proposal is None:

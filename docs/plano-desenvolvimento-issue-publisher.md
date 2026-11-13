@@ -345,10 +345,10 @@ Requisitos: RF22 a RF25, RNF16. Depende de: Etapa 8.
 
 ### Etapa 10 — Ajustes finais
 Requisitos: RNF14, RNF03. Depende de: Etapa 9. Pré-condição: decisão D15 validada.
-- [ ] `GET /user` na subida (D15, item 3): falha temporária tenta de novo com o backoff de 1 s a 30 s e log de warning `worker.identify_failed`, parando se vier o pedido de parada; falha permanente encerra com log de erro `worker.identify_failed` e código de saída diferente de zero. Testes com a porta falsa: 503 e depois 200 segue e consome; 401 encerra sem conectar ao broker.
-- [ ] `publish.received` só depois de validar o schema, com `proposal_id` e `revision` (D15, item 1); ajustar os testes de log (mensagem inválida gera só `publish.discarded_invalid`).
-- [ ] Queda do broker com mensagem em curso (D15, item 2, revisado): proteger o processamento da mensagem do cancelamento do aio-pika para que o `POST` e o commit terminem; ack que falha depois do commit gera `publish.ack_failed`, sem backoff. O teste de queda do broker confere `post_count = 1`, `tries = 1` e um único comentário, e a docstring descreve esse comportamento. Partir das alterações já feitas na working tree (itens 1 e 2 desta etapa).
-- [ ] README: registrar os eventos de log novos e o comportamento do `GET /user` na subida.
+- [x] `GET /user` na subida (D15, item 3): falha temporária tenta de novo com o backoff de 1 s a 30 s e log de warning `worker.identify_failed`, parando se vier o pedido de parada; falha permanente encerra com log de erro `worker.identify_failed` e código de saída diferente de zero. Testes com a porta falsa: 503 e depois 200 segue e consome; 401 encerra sem conectar ao broker.
+- [x] `publish.received` só depois de validar o schema, com `proposal_id` e `revision` (D15, item 1); ajustar os testes de log (mensagem inválida gera só `publish.discarded_invalid`).
+- [x] Queda do broker com mensagem em curso (D15, item 2, revisado): proteger o processamento da mensagem do cancelamento do aio-pika para que o `POST` e o commit terminem; ack que falha depois do commit gera `publish.ack_failed`, sem backoff. O teste de queda do broker confere `post_count = 1`, `tries = 1` e um único comentário, e a docstring descreve esse comportamento. Partir das alterações já feitas na working tree (itens 1 e 2 desta etapa).
+- [x] README: registrar os eventos de log novos e o comportamento do `GET /user` na subida.
 
 ## Pontos em aberto
 
