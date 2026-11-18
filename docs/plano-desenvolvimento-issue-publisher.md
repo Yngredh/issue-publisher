@@ -167,7 +167,7 @@ Lidos, mas de outros donos (só existem nos testes pelo script de D11): a view `
 
 ### DDL de `triage` e `catalog` para o stub de teste (D11)
 
-Cópia literal da Modelagem de dados (revisão 139, de 2026-11-12), restrita ao que a view `triage.publishable_proposals` e `catalog.projects` precisam: as três tabelas de `triage`, a view e `catalog.projects`. Ficaram de fora, de propósito, `triage.route_decisions`, `triage.publish_outbox`, `catalog.triage_guidelines`, o índice `analysis_attempts_one_per_edit` e os papéis e `GRANT` (P6). Este é o conteúdo de `tests/fixtures/sql/triage_catalog_stub.sql`; os schemas `triage` e `catalog` pertencem a outros serviços e o stub nunca vai para `migrations/`. Se a Modelagem de dados mudar essas tabelas, este bloco é atualizado aqui primeiro.
+Cópia literal da Modelagem de dados (revisão 166, de 2026-11-17), restrita ao que a view `triage.publishable_proposals` e `catalog.projects` precisam: as três tabelas de `triage`, a view e `catalog.projects`. Ficaram de fora, de propósito, `triage.route_decisions`, `triage.publish_outbox`, `catalog.triage_guidelines`, o índice `analysis_attempts_one_per_edit` e os papéis e `GRANT` (P6). Este é o conteúdo de `tests/fixtures/sql/triage_catalog_stub.sql`; os schemas `triage` e `catalog` pertencem a outros serviços e o stub nunca vai para `migrations/`. Se a Modelagem de dados mudar essas tabelas, este bloco é atualizado aqui primeiro.
 
 ```sql
 CREATE SCHEMA IF NOT EXISTS triage;
@@ -210,6 +210,7 @@ CREATE TABLE triage.analysis_attempts (
   trigger_ref  text,                               -- eventId do issues.edited ou id da resolução
   state        text NOT NULL CHECK (state IN ('IN_PROGRESS', 'DONE')),
   outcome      text,                               -- status do caso ao terminar a tentativa
+  error        text,                               -- falha técnica da tentativa (Issue Triage Spec, seção 6)
   started_at   timestamptz NOT NULL DEFAULT now(),
   finished_at  timestamptz,
   UNIQUE (event_id, attempt)                       -- chave de deduplicação da fila analysis
@@ -222,7 +223,10 @@ CREATE TABLE triage.proposals (
   specialist         text CHECK (specialist IN ('bug', 'melhoria', 'dominio')),
   category           text CHECK (category IN ('bug', 'melhoria', 'duvida')),
   summary            text,
-  analysis_result    text,
+  next_step          text,
+  conclusion         text CHECK (conclusion IN ('procede', 'nao_procede', 'sem_informacao')),
+  conclusion_reason  text,
+  answer             text,
   evidence           jsonb NOT NULL DEFAULT '[]',  -- trechos do evento ou do catálogo
   tool_calls         jsonb NOT NULL DEFAULT '[]',  -- ferramenta, argumentos, duração (RNF11)
   raw_output         jsonb,                        -- saída bruta, guardada mesmo se reprovada (RF31)
@@ -234,7 +238,8 @@ CREATE TABLE triage.proposals (
   created_at         timestamptz NOT NULL DEFAULT now(),
   CHECK (kind = 'missing_info' OR specialist IS NOT NULL),
   CHECK (validation_status = 'VALID' OR validation_error IS NOT NULL),
-  CHECK (validation_status = 'INVALID' OR comment_body IS NOT NULL)
+  CHECK (validation_status = 'INVALID' OR comment_body IS NOT NULL),
+  CHECK (answer IS NULL OR specialist = 'dominio')
 );
 
 CREATE VIEW triage.publishable_proposals AS
@@ -357,11 +362,11 @@ Divergências entre documentos e lacunas. Cada decisão tomada aqui deve voltar 
 | # | Ponto | Situação | Bloqueia |
 |---|---|---|---|
 | P1 | Nomes no schema `inbound` | Resolvido: a Issue Publisher Spec passou a usar `inbound.issue_presentation` e `inbound.issue_events`, como a Modelagem de dados | — |
-| P2 | Formato do marcador oculto | A spec assume `<!-- triage:<eventId>:<revision> -->` e pede que o formato seja registrado na spec da triagem. Este plano usa esse formato | — (registrar na spec da triagem) |
-| P3 | Origem do catálogo no banco | O High Level Design diz que o catálogo é o `catalog.yaml` lido do disco pelo `issue-triage`; a Modelagem de dados e a Issue Publisher Spec leem `catalog.projects` no banco, carregado por seed. Falta definir quem gera o seed a partir do `catalog.yaml` | Não bloqueia os testes (stub de D11); bloqueia a execução integrada |
+| P2 | Formato do marcador oculto | Resolvido em 2026-11-17: `<!-- triage:<eventId>:<revision> -->` registrado na Issue Triage Spec (seção 4, templates do comentário), com limpeza de `<!--`/`-->` no texto vindo da IA | — |
+| P3 | Origem do catálogo no banco | Resolvido em 2026-11-17 (ADR-0001 — Catálogo de projetos dentro do issue-triage): não há `catalog.yaml`; `catalog/schema.sql` e `catalog/seed.sql` ficam no repositório do `issue-triage` e são executados pelo initdb do PostgreSQL. O publisher só lê `catalog.projects` | — |
 | P4 | Quem declara a topologia de `publish` | Resolvido: o `issue-triage` declara `publish`; o publisher declara só `publish.retry` (D6). Registrado na Issue Publisher Spec e no High Level Design | — |
 | P5 | Limite de tentativas acima de 3 | Resolvido: o limite fica em 3. A Issue Publisher Spec não prevê mais o quarto atraso, e `PUBLISH_RETRY_DELAYS_S` passou a `10,20` | — |
-| P6 | Papéis, permissões e compose integrado | O papel `publisher_svc` e os `GRANT` atravessam serviços; falta decidir onde ficam e onde mora o compose dos três serviços (mesmo ponto do issue-analyst-api) | Não bloqueia: este plano usa o compose local e `DATABASE_URL` |
+| P6 | Papéis, permissões e compose integrado | O papel `publisher_svc` e os `GRANT` atravessam serviços; o compose dos três serviços fica no repositório do `issue-triage` (ADR-0001, 2026-11-17), com os papéis e `GRANT` no initdb (`infra/initdb/00_roles.sql`, plano do issue-triage, Etapa 13) | Não bloqueia: este plano usa o compose local e `DATABASE_URL` |
 
 ## Fora do escopo
 

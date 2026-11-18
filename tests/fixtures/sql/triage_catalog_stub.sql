@@ -38,6 +38,7 @@ CREATE TABLE triage.analysis_attempts (
   trigger_ref  text,                               -- eventId do issues.edited ou id da resolução
   state        text NOT NULL CHECK (state IN ('IN_PROGRESS', 'DONE')),
   outcome      text,                               -- status do caso ao terminar a tentativa
+  error        text,                               -- falha técnica da tentativa (Issue Triage Spec, seção 6)
   started_at   timestamptz NOT NULL DEFAULT now(),
   finished_at  timestamptz,
   UNIQUE (event_id, attempt)                       -- chave de deduplicação da fila analysis
@@ -50,7 +51,10 @@ CREATE TABLE triage.proposals (
   specialist         text CHECK (specialist IN ('bug', 'melhoria', 'dominio')),
   category           text CHECK (category IN ('bug', 'melhoria', 'duvida')),
   summary            text,
-  analysis_result    text,
+  next_step          text,
+  conclusion         text CHECK (conclusion IN ('procede', 'nao_procede', 'sem_informacao')),
+  conclusion_reason  text,
+  answer             text,
   evidence           jsonb NOT NULL DEFAULT '[]',  -- trechos do evento ou do catálogo
   tool_calls         jsonb NOT NULL DEFAULT '[]',  -- ferramenta, argumentos, duração (RNF11)
   raw_output         jsonb,                        -- saída bruta, guardada mesmo se reprovada (RF31)
@@ -62,7 +66,8 @@ CREATE TABLE triage.proposals (
   created_at         timestamptz NOT NULL DEFAULT now(),
   CHECK (kind = 'missing_info' OR specialist IS NOT NULL),
   CHECK (validation_status = 'VALID' OR validation_error IS NOT NULL),
-  CHECK (validation_status = 'INVALID' OR comment_body IS NOT NULL)
+  CHECK (validation_status = 'INVALID' OR comment_body IS NOT NULL),
+  CHECK (answer IS NULL OR specialist = 'dominio')
 );
 
 CREATE VIEW triage.publishable_proposals AS
