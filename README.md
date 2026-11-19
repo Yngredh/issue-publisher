@@ -71,7 +71,14 @@ publicação já `PUBLISHED`, sem chamar o GitHub de novo.
 ## Logs
 
 JSON em stdout. Todo log de mensagem leva `event_id`, `repository`, `issue_number` e `revision`,
-quando já conhecidos. Eventos:
+quando já conhecidos. Todo log também leva `module`, `func_name` (de onde o log saiu) e `message`
+(texto fixo em português, definido em `src/issue_publisher/log_messages.py`). Exemplo:
+
+```json
+{"proposal_id": 7, "revision": 2, "event": "publish.received", "event_id": "12151e32-...", "repository": "Yaane-h/mechanical-hub-orchestrator", "issue_number": 1, "service": "issue-publisher", "level": "info", "timestamp": "2026-11-19T11:29:00Z", "module": "publish", "func_name": "screen_message", "message": "Proposta recebida da fila de publicação"}
+```
+
+Eventos:
 
 | Evento | Quando |
 |---|---|
