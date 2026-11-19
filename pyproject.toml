@@ -8,6 +8,9 @@ authors = [
 ]
 requires-python = ">=3.12"
 dependencies = [
+    "aio-pika>=10.2.3",
+    "httpx>=0.28.1",
+    "psycopg[binary,pool]>=3.3.9",
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.2",
     "structlog>=26.1.0",
@@ -21,7 +24,9 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.2.0",
     "pytest-asyncio>=1.4.1.post1",
+    "respx>=0.23.1",
     "ruff>=0.17.4",
+    "testcontainers[postgres,rabbitmq]>=4.15.0",
 ]
 
 [tool.pytest.ini_options]

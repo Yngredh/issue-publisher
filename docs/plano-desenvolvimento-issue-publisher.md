@@ -42,21 +42,25 @@ As seções "Contratos" e "Modelo de dados" deste plano resumem o que cada etapa
 
 ## Decisões técnicas da implementação
 
-Escolhas de implementação que os documentos não fecham. **Status: D1 a D11 validadas pelo usuário em 2026-11-12 como estão** (D6 já vinha decidida pela Issue Publisher Spec). D1 a D5 seguem o mesmo padrão do issue-analyst-api.
+Escolhas de implementação que os documentos não fecham. **Status: D1 a D11 validadas pelo usuário em 2026-11-12 como estão; D12 a D15 validadas pelo usuário em 2026-11-12** (D6 já vinha decidida pela Issue Publisher Spec). D1 a D5 seguem o mesmo padrão do issue-analyst-api.
 
 | # | Ponto | Escolha proposta |
 |---|---|---|
 | D1 | Driver do PostgreSQL | psycopg 3 assíncrono (`psycopg[binary,pool]`), com `AsyncConnectionPool` |
 | D2 | Migrações | Arquivos SQL numerados em `migrations/`, aplicados por `python -m issue_publisher.migrate`, que registra a versão em `publisher.schema_migrations (version, applied_at)` |
 | D3 | Cliente do RabbitMQ | aio-pika, com ack manual, publisher confirms e mensagens persistentes |
-| D4 | Processo | Worker sem HTTP, iniciado por `python -m issue_publisher.main`, com encerramento limpo em SIGTERM/SIGINT (para de consumir, termina a mensagem em curso, fecha conexões) |
+| D4 | Processo | Worker sem HTTP, iniciado por `python -m issue_publisher.main`, com encerramento limpo em SIGTERM/SIGINT (para de consumir, termina a mensagem em curso, fecha conexões). A mensagem em curso também termina quando o canal do broker cai: o processamento é protegido do cancelamento e só o ack falha (D15, item 2, revisado em 2026-11-12) |
 | D5 | Imagens locais | `postgres:16` e `rabbitmq:3-management` |
 | D6 | Topologia das filas | Decidido (Issue Publisher Spec, "Topologia das filas"): o `issue-triage` declara a fila durável `publish`, sem argumentos, porque a alimenta pela outbox. O publisher declara na subida só a fila durável `publish.retry` com `x-dead-letter-exchange = ""` e `x-dead-letter-routing-key = publish`, e consome `publish` com declaração passiva, tentando de novo com backoff enquanto ela não existir. O atraso de cada cópia vai na expiração da própria mensagem (`expiration`) |
-| D7 | Atraso da nova tentativa | `PUBLISH_RETRY_DELAYS_S[tries - 1]` depois da falha temporária de número `tries`; com `Retry-After`, usa o maior entre o atraso configurado e o `Retry-After`, limitado por `PUBLISH_RETRY_AFTER_MAX_S = 60` |
+| D7 | Atraso da nova tentativa | `PUBLISH_RETRY_DELAYS_S[tries - 1]` depois da falha temporária de número `tries`; com `Retry-After`, usa o maior entre o atraso configurado e o `Retry-After`, sendo que só o `Retry-After` é limitado por `PUBLISH_RETRY_AFTER_MAX_S = 60` (D14). Falha temporária na busca do marcador (sem `POST`): atraso da D12 |
 | D8 | Versão da API do GitHub | header `X-GitHub-Api-Version: 2022-11-28` |
 | D9 | Códigos de pré-condição em `last_error` | Além dos códigos da spec (`invalid_comment_body`, `marker_mismatch`, `repository_not_in_catalog`): `proposal_not_valid` (sem `VALID` ou sem `comment_body`) e `case_not_ready` (caso fora de `READY_TO_PUBLISH`) |
 | D10 | Limite de `PUBLISH_MAX_TRIES` | Validado entre 1 e 3 no `Settings`, padrão 3: o limite é fixo em 3 na Issue Publisher Spec, e os `CHECK` de `publications.tries` e de `publication_tries.try_number` vão até 3 |
-| D11 | Dados de `triage` e `catalog` nos testes | Script SQL só de teste em `tests/fixtures/sql/triage_catalog_stub.sql`, copiado da Modelagem de dados (tabelas `triage.issue_cases`, `triage.analysis_attempts`, `triage.proposals`, view `triage.publishable_proposals` e `catalog.projects`), aplicado pelas fixtures. Nunca vai para `migrations/` |
+| D11 | Dados de `triage` e `catalog` nos testes | Script SQL só de teste em `tests/fixtures/sql/triage_catalog_stub.sql`, copiado da Modelagem de dados (tabelas `triage.issue_cases`, `triage.analysis_attempts`, `triage.proposals`, view `triage.publishable_proposals` e `catalog.projects`), aplicado pelas fixtures. Nunca vai para `migrations/`. Cópia local do DDL: seção "Modelo de dados > DDL de `triage` e `catalog` para o stub de teste (D11)" deste plano (registrado em 2026-11-12, porque os agentes não leem os documentos do claude.ai) |
+| D12 | Falha na busca do marcador (passo 7), `published_at` adotado e `last_error` | **Validada pelo usuário em 2026-11-12.** A busca do marcador não consome tentativa (Issue Publisher Spec, "Contagem"): uma falha no `GET` dos comentários nunca grava `publication_tries` nem incrementa `tries`, e é classificada pela mesma tabela de "Classes de resposta do GitHub". 1) **Temporária** (timeout, erro de conexão, 5xx, 429, 403 com limite de taxa): atualiza `last_error`, mantém `PENDING`, faz commit e devolve o resultado "nova tentativa"; o atraso é `PUBLISH_RETRY_DELAYS_S[0]` quando `tries = 0` e `PUBLISH_RETRY_DELAYS_S[tries - 1]` nos demais casos, com a regra do `Retry-After` da D7. Não há limite de voltas: enquanto o GitHub não responder, a mensagem volta por `publish.retry`, com log de warning `publish.marker_search_failed` a cada volta (nada foi enviado ao GitHub, então não há risco de duplicar). 2) **Permanente** (401, 403 de permissão, 404, 410, 422 e demais 4xx, status fora de 4xx/5xx): `FAILED (permanent)` com `last_error`, sem `POST`. 3) Comentário adotado pela busca: `published_at` = `created_at` do comentário encontrado, como no 201. 4) `last_error` é atualizado a cada falha, temporária ou permanente, da busca ou do `POST`; o `FAILED` final guarda o erro da última tentativa |
+| D13 | Escolhas feitas pelos subagentes nas Etapas 3 a 5 | **Validada pelo usuário em 2026-11-12: nove aceitas como estão e quatro corrigidas.** Aceitas: (a) falha sem resposta HTTP vira `timeout` ou `connection_error`, com o nome da exceção como detalhe; (b) status fora de 4xx e 5xx vira falha permanente `http_<status>`; (d) `Retry-After` aceita segundos ou data, e valor no passado vira 0; (f) erros no `GET /user` e na busca usam a mesma tabela de classes; (g) `proposalId` e `revision` só aceitam inteiro de fato; (h) JSON malformado vira `publish.discarded_invalid`; (i) só a primeira violação de pré-condição vai para `last_error`; (l) o limite de 65.536 conta caracteres Unicode; (m) o detalhe de `last_error` é uma frase livre em inglês. **Corrigidas:** (c) o detalhe do erro vem do `message` do JSON do GitHub ou, sem ele, da frase do status, **truncado em 500 caracteres**; (e) a busca para no primeiro comentário que bate, e o login é comparado **sem diferenciar maiúsculas** (`casefold`), porque o login do GitHub não diferencia; (j) corpo nulo → `proposal_not_valid`, corpo vazio **ou só com espaços** → `invalid_comment_body`; (k) "exatamente um marcador" vale para **qualquer** marcador no formato `<!-- triage:<eventId>:<revision> -->` no corpo: zero, mais de um ou um único com `eventId`/`revision` diferentes → `marker_mismatch` |
+| D14 | Ajustes depois da Etapa 6 (P-a, P-b e escolhas do subagente) | **Validada pelo usuário em 2026-11-12.** P-a) O `Settings` exige pelo menos `max(1, PUBLISH_MAX_TRIES - 1)` valores em `PUBLISH_RETRY_DELAYS_S`, para que a falha temporária na busca do marcador (D12) sempre tenha um atraso; lista vazia é recusada na subida. P-b) Antes do `POST` (passo 8), se `tries >= PUBLISH_MAX_TRIES` (limite reduzido com a linha já `PENDING`), a publicação vai para `FAILED (retries_exhausted)` sem chamar o GitHub, com `last_error = retries_exhausted: tries already at PUBLISH_MAX_TRIES`. Escolhas confirmadas como estão: 1) atraso = `max(atraso configurado, min(Retry-After, PUBLISH_RETRY_AFTER_MAX_S))`; o teto vale só para o `Retry-After`; 2) `publication_tries` grava só `http_status` quando houve resposta HTTP e só `error` em timeout ou erro de conexão; 3) marcador = regex `<!-- triage:(\S+?):(\d+) -->`, com `last_error` `marker_mismatch: expected exactly one marker, found N` ou `marker_mismatch: marker does not match the case event and revision`; 4) `last_error` não é limpo quando a publicação termina em `PUBLISHED`: só indica falha com `state = FAILED`, e o histórico fica em `publication_tries`. Desvio aceito: os testes de corpo só com espaços foram criados na Etapa 6 esperando `invalid_comment_body` |
+| D15 | Escolhas das Etapas 7 a 9 e pontos abertos no fim da implementação | **Validada pelo usuário em 2026-11-12.** Aceitas como estão: backoff de reconexão de 1 s, dobrando até 30 s, fixo no código; qualquer exceção no processamento espera o backoff e devolve a mensagem para a fila (log `publish.processing_failed`); se o broker não confirmar a cópia para `publish.retry`, a original volta para a fila na hora, sem o atraso (log `publish.requeue_failed` se o canal já caiu); a cópia leva corpo, `content_type`, `content_encoding`, `message_id`, `correlation_id` e os headers exceto os `x-*`, é persistente e tem `expiration` = atraso; a conta do publisher é identificada antes de conectar ao broker; nos testes, a queda do banco é simulada com `OperationalError`; `publish.discarded_invalid` leva `event_id`, `repository` e `issue_number` da proposta quando a `revision` não bate; `publish.failed` do `POST` leva `try_number` (no P-b da D14, `http_status` nulo); o contexto do structlog recebe `event_id`, `repository`, `issue_number` e `revision` durante a mensagem; `scripts/publish_message.py` declara `publish` durável e sem argumentos, igual à declaração do `issue-triage` (D6); o README manda aplicar o stub à mão no banco local. **Corrigidas na Etapa 10:** 1) `publish.received` sai só depois de validar o schema (passo 1), como na Issue Publisher Spec ("mensagem válida recebida"), com `proposal_id` e `revision`; mensagem inválida gera só `publish.discarded_invalid`. 2) **Revisado pelo usuário em 2026-11-12** (a premissa original estava errada: hoje o aio-pika cancela o processamento quando o canal cai, o `POST` em curso é interrompido e a transação é desfeita): o processamento da mensagem em curso passa a ser protegido do cancelamento (por exemplo com `asyncio.shield`), de modo que o `POST` termina, o commit grava o resultado e só o ack falha; a reentrega encontra `PUBLISHED` no passo 5 e não chama o GitHub. Ack ou nack que falha depois do commit gera o log de warning `publish.ack_failed` (com `error`), em vez de `publish.processing_failed`, e não espera backoff. O teste de queda do broker em curso confere `post_count = 1`, `tries = 1` e um único comentário, e a docstring descreve esse comportamento. Campos de `worker.identify_failed` aceitos como o subagente fez: `failure_kind`, `http_status`, `last_error` e `backoff_s`. **Pontos abertos decididos:** 3) `GET /user` na subida: falha temporária (timeout, erro de conexão, 5xx, 429, 403 com limite de taxa) tenta de novo com o mesmo backoff de 1 s a 30 s, com log de warning `worker.identify_failed`, respeitando o pedido de parada; falha permanente (401, 403 de permissão, demais 4xx) encerra com log de erro `worker.identify_failed` e código de saída diferente de zero. 4) Os eventos `publish.processing_failed`, `publish.requeue_failed` e `publish.marker_search_failed` entram em "Contratos > Logs". 5) Mensagem que falha sempre por bug volta para a fila sem fim: limitação assumida, visível pelo log `publish.processing_failed`; a DLQ da fila `publish` por policy fica em Melhorias futuras |
 
 ## Contratos
 
@@ -76,8 +80,8 @@ Validada com Pydantic v2: `proposalId` inteiro, `revision` inteiro ≥ 1, sem ca
 4. Reivindicar: `INSERT ... ON CONFLICT (repository, issue_number, revision) DO NOTHING` com `state = PENDING`, `tries = 0`, e `SELECT ... FOR UPDATE` da linha numa transação que cobre a tentativa inteira.
 5. `PUBLISHED` ou `FAILED` → commit e ack, sem chamar o GitHub.
 6. Pré-condições (RF22): `validation_status = 'VALID'` e `comment_body` preenchido; `case_status = 'READY_TO_PUBLISH'`; repositório em `catalog.projects`; corpo válido (não vazio, até 65.536 caracteres, exatamente um marcador `<!-- triage:<origin_event_id>:<revision> -->`). Violação → `FAILED`, `failure_kind = 'permanent'`, `last_error` com o código, sem chamar o GitHub.
-7. Procurar o marcador na issue (em toda tentativa): achou, com autor = conta do publisher → adota id e URL, `PUBLISHED`.
-8. Criar o comentário: POST, grava `publication_tries` (`try_number`, `http_status` ou `error`) e incrementa `tries`.
+7. Procurar o marcador na issue (em toda tentativa): achou, com autor = conta do publisher (login comparado sem diferenciar maiúsculas, D13) → adota id, URL e `published_at` = `created_at` do comentário, `PUBLISHED`. Falha na busca: D12 (não consome tentativa; temporária → nova tentativa, permanente → `FAILED (permanent)`).
+8. Se `tries >= PUBLISH_MAX_TRIES`, `FAILED (retries_exhausted)` sem `POST` (D14). Senão, criar o comentário: POST, grava `publication_tries` (`try_number`, `http_status` ou `error`) e incrementa `tries`.
 9. Aplicar o resultado (tabela de classes abaixo).
 10. Commit da transação e, só depois, ack. Nova tentativa: commit, publica a cópia em `publish.retry` com confirmação do broker e só então ack da original.
 
@@ -93,7 +97,7 @@ Banco ou broker indisponível: não confirma a mensagem e não gasta tentativa.
 | 404, 410 | Permanente | `FAILED (permanent)` |
 | 422 e demais 4xx | Permanente | `FAILED (permanent)` |
 
-`last_error` no formato `<código>: <detalhe>`, por exemplo `http_403: Resource not accessible`. POST com timeout conta como temporária, e a próxima tentativa começa pela busca do marcador.
+`last_error` no formato `<código>: <detalhe>`, por exemplo `http_403: Resource not accessible`, com o detalhe truncado em 500 caracteres (D13) e atualizado a cada falha, da busca ou do `POST` (D12). A mesma tabela vale para o `GET` da busca do marcador, que nunca consome tentativa (D12). POST com timeout conta como temporária, e a próxima tentativa começa pela busca do marcador.
 
 ### Chamadas ao GitHub (porta `GitHubIssuesPort`)
 | Operação | Chamada |
@@ -114,12 +118,12 @@ Headers: `Authorization: Bearer <token>`, `Accept: application/vnd.github+json`,
 | `GITHUB_BOT_LOGIN` | vazio = lido de `GET /user` na subida |
 | `GITHUB_CONNECT_TIMEOUT_S`, `GITHUB_READ_TIMEOUT_S` | `10`, `15` |
 | `PUBLISH_MAX_TRIES` | `3` (1 a 3, D10) |
-| `PUBLISH_RETRY_DELAYS_S` | `10,20` |
+| `PUBLISH_RETRY_DELAYS_S` | `10,20` (pelo menos `max(1, PUBLISH_MAX_TRIES - 1)` valores, D14) |
 | `PUBLISH_RETRY_AFTER_MAX_S` | `60` (D7) |
 | `PUBLISH_PREFETCH` | `1` |
 
 ### Logs
-Todo log leva `event_id` (o `origin_event_id`), `repository`, `issue_number` e `revision`. Eventos: `publish.received`, `publish.skipped_stale`, `publish.discarded_invalid`, `publish.marker_found`, `publish.try`, `publish.published`, `publish.retry_scheduled`, `publish.failed`.
+Todo log leva `event_id` (o `origin_event_id`), `repository`, `issue_number` e `revision`, quando já conhecidos. Eventos: `publish.received` (só depois de validar o schema, com `proposal_id` e `revision`, D15), `publish.skipped_stale`, `publish.discarded_invalid`, `publish.marker_found`, `publish.try`, `publish.published`, `publish.retry_scheduled`, `publish.failed`, `publish.marker_search_failed` (D12), `publish.processing_failed`, `publish.requeue_failed` e `publish.ack_failed` (D15). Do worker: `worker.identify_failed` (D15), além dos de conexão e parada.
 
 ## Modelo de dados (schema `publisher`, conforme a Modelagem de dados)
 
@@ -161,79 +165,195 @@ CREATE TABLE publisher.publication_tries (
 
 Lidos, mas de outros donos (só existem nos testes pelo script de D11): a view `triage.publishable_proposals` (dona: `issue-triage`) e a tabela `catalog.projects` (seed do ambiente). As linhas de `publications` nunca são apagadas.
 
+### DDL de `triage` e `catalog` para o stub de teste (D11)
+
+Cópia literal da Modelagem de dados (revisão 166, de 2026-11-17), restrita ao que a view `triage.publishable_proposals` e `catalog.projects` precisam: as três tabelas de `triage`, a view e `catalog.projects`. Ficaram de fora, de propósito, `triage.route_decisions`, `triage.publish_outbox`, `catalog.triage_guidelines`, o índice `analysis_attempts_one_per_edit` e os papéis e `GRANT` (P6). Este é o conteúdo de `tests/fixtures/sql/triage_catalog_stub.sql`; os schemas `triage` e `catalog` pertencem a outros serviços e o stub nunca vai para `migrations/`. Se a Modelagem de dados mudar essas tabelas, este bloco é atualizado aqui primeiro.
+
+```sql
+CREATE SCHEMA IF NOT EXISTS triage;
+CREATE SCHEMA IF NOT EXISTS catalog;
+
+CREATE TABLE triage.issue_cases (
+  id               bigserial PRIMARY KEY,
+  repository       text NOT NULL,
+  issue_number     int  NOT NULL,
+  origin_event_id  text NOT NULL UNIQUE,           -- primeiro issue.created da issue
+  status           text NOT NULL CHECK (status IN (
+                     'ANALYZING', 'NEEDS_REVIEW', 'MAX_RETRIES_REACHED',
+                     'READY_TO_PUBLISH', 'CANCELLED', 'FINISHED')),
+  status_reason    text NOT NULL,                  -- motivo do status (combinação no CHECK abaixo)
+  category         text CHECK (category IN ('bug', 'melhoria', 'duvida', 'indeterminado')),
+  current_attempt  int NOT NULL DEFAULT 1 CHECK (current_attempt >= 1),
+  manual_attempts  int NOT NULL DEFAULT 0 CHECK (manual_attempts >= 0),  -- limite: MAX_MANUAL_ATTEMPTS
+  closed_by_review_id  bigint,                 -- inbound.issue_review_history.id
+  created_at       timestamptz NOT NULL DEFAULT now(),
+  updated_at       timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (repository, issue_number),               -- um caso por issue
+  CHECK (
+    (status = 'ANALYZING'              AND status_reason IN ('initial', 'author_edit', 'enrich', 'reprocess'))
+    OR (status = 'READY_TO_PUBLISH'    AND status_reason = 'empty_description')
+    OR (status = 'READY_TO_PUBLISH'    AND status_reason = 'proposal_validated')
+    OR (status = 'NEEDS_REVIEW'        AND status_reason IN ('unknown_repo', 'insufficient_content',
+                                                           'invalid_proposal', 'technical_failure'))
+    OR (status = 'MAX_RETRIES_REACHED' AND status_reason = 'manual_attempts_exhausted')
+    OR (status IN ('CANCELLED', 'FINISHED') AND status_reason = 'closed_by_reviewer')
+  ),
+  CHECK (status NOT IN ('CANCELLED', 'FINISHED') OR closed_by_review_id IS NOT NULL)
+);
+
+CREATE TABLE triage.analysis_attempts (
+  id           bigserial PRIMARY KEY,
+  case_id      bigint NOT NULL REFERENCES triage.issue_cases (id),
+  event_id     text NOT NULL,                      -- origin_event_id do caso
+  attempt      int  NOT NULL CHECK (attempt >= 1),
+  trigger      text NOT NULL CHECK (trigger IN ('initial', 'author_edit', 'enrich', 'reprocess')),
+  trigger_ref  text,                               -- eventId do issues.edited ou id da resolução
+  state        text NOT NULL CHECK (state IN ('IN_PROGRESS', 'DONE')),
+  outcome      text,                               -- status do caso ao terminar a tentativa
+  error        text,                               -- falha técnica da tentativa (Issue Triage Spec, seção 6)
+  started_at   timestamptz NOT NULL DEFAULT now(),
+  finished_at  timestamptz,
+  UNIQUE (event_id, attempt)                       -- chave de deduplicação da fila analysis
+);
+
+CREATE TABLE triage.proposals (
+  id                 bigserial PRIMARY KEY,
+  attempt_id         bigint NOT NULL UNIQUE REFERENCES triage.analysis_attempts (id),
+  kind               text NOT NULL CHECK (kind IN ('triage', 'missing_info')),
+  specialist         text CHECK (specialist IN ('bug', 'melhoria', 'dominio')),
+  category           text CHECK (category IN ('bug', 'melhoria', 'duvida')),
+  summary            text,
+  next_step          text,
+  conclusion         text CHECK (conclusion IN ('procede', 'nao_procede', 'sem_informacao')),
+  conclusion_reason  text,
+  answer             text,
+  evidence           jsonb NOT NULL DEFAULT '[]',  -- trechos do evento ou do catálogo
+  tool_calls         jsonb NOT NULL DEFAULT '[]',  -- ferramenta, argumentos, duração (RNF11)
+  raw_output         jsonb,                        -- saída bruta, guardada mesmo se reprovada (RF31)
+  validation_status  text NOT NULL CHECK (validation_status IN ('VALID', 'INVALID')),
+  validation_error   text,                         -- motivo da reprovação
+  comment_body       text,                         -- texto final do template, com marcador oculto
+  prompt_version     text,
+  model              text,
+  created_at         timestamptz NOT NULL DEFAULT now(),
+  CHECK (kind = 'missing_info' OR specialist IS NOT NULL),
+  CHECK (validation_status = 'VALID' OR validation_error IS NOT NULL),
+  CHECK (validation_status = 'INVALID' OR comment_body IS NOT NULL),
+  CHECK (answer IS NULL OR specialist = 'dominio')
+);
+
+CREATE VIEW triage.publishable_proposals AS
+SELECT
+  pr.id             AS proposal_id,
+  c.repository,
+  c.issue_number,
+  c.origin_event_id,                       -- vai no marcador oculto
+  a.attempt         AS revision,           -- attempt que gerou a proposta
+  c.current_attempt,                       -- para descartar mensagem obsoleta
+  c.status          AS case_status,        -- precisa estar em READY_TO_PUBLISH
+  pr.kind,
+  pr.validation_status,
+  pr.comment_body
+FROM triage.proposals pr
+JOIN triage.analysis_attempts a ON a.id = pr.attempt_id
+JOIN triage.issue_cases c ON c.id = a.case_id;
+
+CREATE TABLE catalog.projects (
+  repository   text PRIMARY KEY CHECK (repository ~ '^[^/\s]+/[^/\s]+$'),
+  name         text NOT NULL,
+  responsible  text NOT NULL,              -- citado no comentário (RF19)
+  description  text NOT NULL DEFAULT ''
+);
+```
+
 ## Atividades
 
 ### Etapa 1 — Fundação do worker
 Requisitos: RNF14, RNF18. Depende de: pré-requisitos. Pré-condição: decisões D1 a D5 e D10 validadas.
-- [ ] Adicionar dependências com `uv add`: `psycopg[binary,pool]`, `aio-pika`, `httpx`; e com `uv add --dev`: `testcontainers[postgres,rabbitmq]`, `respx`.
-- [ ] Completar `Settings` com as variáveis de "Contratos > Variáveis de ambiente" (`GITHUB_TOKEN` como `SecretStr` obrigatório; `PUBLISH_RETRY_DELAYS_S` lido como lista de inteiros a partir de `10,20`; `PUBLISH_MAX_TRIES` entre 1 e 3; a lista de atrasos precisa ter pelo menos `PUBLISH_MAX_TRIES - 1` valores) e ajustar os testes existentes.
-- [ ] Fazer `main.py` iniciar o worker com encerramento limpo em SIGTERM/SIGINT (D4); o consumo de verdade entra na Etapa 7.
-- [ ] Atualizar o `.env.example` (só nomes) e criar `docker-compose.yml` local com PostgreSQL e RabbitMQ para desenvolvimento.
-- [ ] Criar `Dockerfile` do serviço baseado em uv.
-- [ ] Testes: `Settings` falha sem `GITHUB_TOKEN`, com `PUBLISH_MAX_TRIES` fora de 1 a 3 e com lista de atrasos curta demais; o token não aparece no `repr` nem em log.
-- [ ] Atualizar o README com como subir o compose e iniciar o worker.
+- [x] Adicionar dependências com `uv add`: `psycopg[binary,pool]`, `aio-pika`, `httpx`; e com `uv add --dev`: `testcontainers[postgres,rabbitmq]`, `respx`.
+- [x] Completar `Settings` com as variáveis de "Contratos > Variáveis de ambiente" (`GITHUB_TOKEN` como `SecretStr` obrigatório; `PUBLISH_RETRY_DELAYS_S` lido como lista de inteiros a partir de `10,20`; `PUBLISH_MAX_TRIES` entre 1 e 3; a lista de atrasos precisa ter pelo menos `PUBLISH_MAX_TRIES - 1` valores) e ajustar os testes existentes.
+- [x] Fazer `main.py` iniciar o worker com encerramento limpo em SIGTERM/SIGINT (D4); o consumo de verdade entra na Etapa 7.
+- [x] Atualizar o `.env.example` (só nomes) e criar `docker-compose.yml` local com PostgreSQL e RabbitMQ para desenvolvimento.
+- [x] Criar `Dockerfile` do serviço baseado em uv.
+- [x] Testes: `Settings` falha sem `GITHUB_TOKEN`, com `PUBLISH_MAX_TRIES` fora de 1 a 3 e com lista de atrasos curta demais; o token não aparece no `repr` nem em log.
+- [x] Atualizar o README com como subir o compose e iniciar o worker.
 
 ### Etapa 2 — Schema publisher, migrações e dados de teste
 Requisitos: RNF07. Depende de: Etapa 1. Pré-condição: decisões D2 e D11 validadas.
-- [ ] Criar `migrations/0001_publisher_schema.sql` com o DDL da seção "Modelo de dados".
-- [ ] Criar o runner `python -m issue_publisher.migrate` (D2), idempotente.
-- [ ] Criar o adaptador de conexão em `adapters/` (pool assíncrono do psycopg).
-- [ ] Criar `tests/fixtures/sql/triage_catalog_stub.sql` (D11), copiando da Modelagem de dados só o necessário para a view `triage.publishable_proposals` e para `catalog.projects`.
-- [ ] Criar fixtures em `tests/conftest.py`: PostgreSQL do testcontainers por sessão com as migrações e o stub aplicados, e uma fábrica de dados de teste que cria caso, tentativa, proposta e projeto do catálogo.
-- [ ] Testes de integração: a chave única `(repository, issue_number, revision)`; `PUBLISHED` sem id ou URL é recusado; `FAILED` sem `failure_kind` é recusado; `tries` e `try_number` fora de 0 a 3 são recusados; o runner é idempotente; a view do stub devolve as colunas de "Contratos > Leitura da proposta".
+- [x] Criar `migrations/0001_publisher_schema.sql` com o DDL da seção "Modelo de dados".
+- [x] Criar o runner `python -m issue_publisher.migrate` (D2), idempotente.
+- [x] Criar o adaptador de conexão em `adapters/` (pool assíncrono do psycopg).
+- [x] Criar `tests/fixtures/sql/triage_catalog_stub.sql` (D11) com o conteúdo exato da seção "Modelo de dados > DDL de `triage` e `catalog` para o stub de teste (D11)", sem acrescentar nem remover nada.
+- [x] Criar fixtures em `tests/conftest.py`: PostgreSQL do testcontainers por sessão com as migrações e o stub aplicados, e uma fábrica de dados de teste que cria caso, tentativa, proposta e projeto do catálogo.
+- [x] Testes de integração: a chave única `(repository, issue_number, revision)`; `PUBLISHED` sem id ou URL é recusado; `FAILED` sem `failure_kind` é recusado; `tries` e `try_number` fora de 0 a 3 são recusados; o runner é idempotente; a view do stub devolve as colunas de "Contratos > Leitura da proposta".
 
 ### Etapa 3 — Porta do GitHub e cliente HTTP
 Requisitos: RF23, RF24, RF25, RNF16. Depende de: Etapa 1. Pré-condição: decisões D7 e D8 validadas.
-- [ ] Definir a porta `GitHubIssuesPort` em `domain/` com: identificar a conta, procurar comentário por marcador e autor, e criar comentário.
-- [ ] Implementar o adaptador httpx: headers e timeouts de "Contratos", paginação até a última página (header `Link`), e na criação devolver id, `html_url` e `created_at` em sucesso, ou um erro classificado.
-- [ ] Implementar a classificação de "Contratos > Classes de resposta", incluindo a leitura de `Retry-After` e `x-ratelimit-remaining`, e o formato de `last_error`.
-- [ ] Implementar uma porta falsa em memória para os testes dos próximos passos (comentários por issue, respostas programáveis por chamada, contagem de POSTs).
-- [ ] Testes com respx: paginação com marcador na última página; marcador de outro autor ignorado; cada linha da tabela de classes; timeout e erro de conexão como temporários; `Retry-After` lido; o token não aparece em log nem em mensagem de erro.
+- [x] Definir a porta `GitHubIssuesPort` em `domain/` com: identificar a conta, procurar comentário por marcador e autor, e criar comentário.
+- [x] Implementar o adaptador httpx: headers e timeouts de "Contratos", paginação até a última página (header `Link`), e na criação devolver id, `html_url` e `created_at` em sucesso, ou um erro classificado.
+- [x] Implementar a classificação de "Contratos > Classes de resposta", incluindo a leitura de `Retry-After` e `x-ratelimit-remaining`, e o formato de `last_error`.
+- [x] Implementar uma porta falsa em memória para os testes dos próximos passos (comentários por issue, respostas programáveis por chamada, contagem de POSTs).
+- [x] Testes com respx: paginação com marcador na última página; marcador de outro autor ignorado; cada linha da tabela de classes; timeout e erro de conexão como temporários; `Retry-After` lido; o token não aparece em log nem em mensagem de erro.
 
 ### Etapa 4 — Mensagem e leitura da proposta
 Requisitos: RF22, RNF07. Depende de: Etapa 2.
-- [ ] Modelo Pydantic da mensagem `publish` (`extra = "forbid"`, `revision >= 1`).
-- [ ] Repositório de leitura da view `triage.publishable_proposals` por `proposal_id` e da presença do repositório em `catalog.projects`.
-- [ ] Passos 1 a 3 do processamento como lógica testável sem broker: schema inválido, proposta inexistente ou `revision` diferente → descartar; `revision < current_attempt` → obsoleta.
-- [ ] Testes unitários do modelo e testes de integração dos passos 1 a 3 com o stub, confirmando que nenhum desses casos cria linha em `publications`.
+- [x] Modelo Pydantic da mensagem `publish` (`extra = "forbid"`, `revision >= 1`).
+- [x] Repositório de leitura da view `triage.publishable_proposals` por `proposal_id` e da presença do repositório em `catalog.projects`.
+- [x] Passos 1 a 3 do processamento como lógica testável sem broker: schema inválido, proposta inexistente ou `revision` diferente → descartar; `revision < current_attempt` → obsoleta.
+- [x] Testes unitários do modelo e testes de integração dos passos 1 a 3 com o stub, confirmando que nenhum desses casos cria linha em `publications`.
 
 ### Etapa 5 — Reivindicação e pré-condições
 Requisitos: RF22, RNF03. Depende de: Etapa 4. Pré-condição: decisão D9 validada.
-- [ ] Reivindicação (passo 4): `INSERT ... ON CONFLICT (repository, issue_number, revision) DO NOTHING` com `state = PENDING`, `tries = 0` e as colunas de reivindicação da spec (`proposal_id`, `origin_event_id`, `kind`), seguida de `SELECT ... FOR UPDATE` na mesma transação.
-- [ ] Estado final já registrado (passo 5): encerrar sem chamar o GitHub.
-- [ ] Pré-condições (passo 6) e regras do corpo, encerrando em `FAILED (permanent)` com o código em `last_error` (spec e D9), sem chamar o GitHub.
-- [ ] Testes de integração com a porta falsa: repositório fora do catálogo (cenário 11); corpo sem marcador ou com marcador de outro evento (cenário 14); corpo vazio ou acima de 65.536 caracteres; proposta `INVALID`; caso fora de `READY_TO_PUBLISH`; linha já `PUBLISHED` ou `FAILED` não chama a porta; nenhum desses casos faz POST.
+- [x] Reivindicação (passo 4): `INSERT ... ON CONFLICT (repository, issue_number, revision) DO NOTHING` com `state = PENDING`, `tries = 0` e as colunas de reivindicação da spec (`proposal_id`, `origin_event_id`, `kind`), seguida de `SELECT ... FOR UPDATE` na mesma transação.
+- [x] Estado final já registrado (passo 5): encerrar sem chamar o GitHub.
+- [x] Pré-condições (passo 6) e regras do corpo, encerrando em `FAILED (permanent)` com o código em `last_error` (spec e D9), sem chamar o GitHub.
+- [x] Testes de integração com a porta falsa: repositório fora do catálogo (cenário 11); corpo sem marcador ou com marcador de outro evento (cenário 14); corpo vazio ou acima de 65.536 caracteres; proposta `INVALID`; caso fora de `READY_TO_PUBLISH`; linha já `PUBLISHED` ou `FAILED` não chama a porta; nenhum desses casos faz POST.
 
 ### Etapa 6 — Publicação com anti-duplicação
-Requisitos: RF23, RF24, RNF03. Depende de: Etapas 3 e 5.
-- [ ] Passo 7: busca do marcador antes de todo POST; comentário encontrado com autor = conta do publisher → adota id e URL, grava `PUBLISHED`, log `publish.marker_found`.
-- [ ] Passo 8: POST, linha em `publication_tries` e `tries` incrementado na mesma transação.
-- [ ] Passo 9 para sucesso e falha permanente: 201 grava `PUBLISHED` com id, URL e `published_at`; permanente grava `FAILED (permanent)`. A falha temporária devolve o resultado "nova tentativa" ou, na última tentativa, `FAILED (retries_exhausted)`; o envio a `publish.retry` fica para a Etapa 7.
-- [ ] Testes de integração com a porta falsa: proposta pronta publica um comentário (cenário 1); descrição vazia publica o comentário-template (cenário 15); marcador colado por outro autor é ignorado (cenário 12); queda depois do POST e antes do commit, com reprocessamento que adota o comentário e totaliza um só (cenário 5); 403 de permissão vira `FAILED (permanent)` na 1ª tentativa (cenário 9).
+Requisitos: RF23, RF24, RNF03. Depende de: Etapas 3 e 5. Pré-condição: decisões D12 e D13 validadas.
+- [x] Correção da D13 na Etapa 3 (c): truncar em 500 caracteres o detalhe de erro vindo do `message` do GitHub ou da frase do status; teste com mensagem maior que 500.
+- [x] Correção da D13 na Etapa 3 (e): comparar `user.login` com a conta do publisher sem diferenciar maiúsculas (`casefold`); teste com `GITHUB_BOT_LOGIN` em outra caixa.
+- [x] Correção da D13 na Etapa 5 (j): corpo só com espaços → `invalid_comment_body`; ajustar o teste que hoje espera `marker_mismatch`.
+- [x] Correção da D13 na Etapa 5 (k): contar todos os marcadores `<!-- triage:<eventId>:<revision> -->` do corpo; exatamente um e igual ao do caso e da revisão, senão `marker_mismatch`; testes com marcador de outro evento junto do correto e com dois marcadores iguais.
+- [x] Passo 7: busca do marcador antes de todo POST; comentário encontrado com autor = conta do publisher → adota id, URL e `published_at` = `created_at` do comentário (D12), grava `PUBLISHED`, log `publish.marker_found`.
+- [x] Passo 7, falha na busca (D12): não grava `publication_tries` nem incrementa `tries`; temporária → atualiza `last_error`, mantém `PENDING`, commit, resultado "nova tentativa" com o atraso da D12 e log de warning `publish.marker_search_failed`; permanente → `FAILED (permanent)` sem `POST`.
+- [x] `last_error` atualizado a cada falha temporária do `POST` (D12).
+- [x] Passo 8: POST, linha em `publication_tries` e `tries` incrementado na mesma transação.
+- [x] Passo 9 para sucesso e falha permanente: 201 grava `PUBLISHED` com id, URL e `published_at`; permanente grava `FAILED (permanent)`. A falha temporária devolve o resultado "nova tentativa" ou, na última tentativa, `FAILED (retries_exhausted)`; o envio a `publish.retry` fica para a Etapa 7.
+- [x] Testes de integração com a porta falsa: proposta pronta publica um comentário (cenário 1); descrição vazia publica o comentário-template (cenário 15); marcador colado por outro autor é ignorado (cenário 12); queda depois do POST e antes do commit, com reprocessamento que adota o comentário e totaliza um só (cenário 5); 403 de permissão vira `FAILED (permanent)` na 1ª tentativa (cenário 9); busca com timeout não muda `tries` nem `publication_tries` e devolve "nova tentativa" com atraso de `PUBLISH_RETRY_DELAYS_S[0]`; busca com 404 vira `FAILED (permanent)` sem `POST`; comentário adotado grava `published_at` do `created_at`; o `FAILED (retries_exhausted)` guarda o `last_error` da última falha.
 
 ### Etapa 7 — Consumidor, retentativas e topologia das filas
 Requisitos: RF25, RNF03. Depende de: Etapa 6. Pré-condição: decisões D3 e D7 validadas.
-- [ ] Declarar `publish.retry` na subida e consumir `publish` com declaração passiva, tentando de novo com backoff enquanto ela não existir (D6). Nos testes, a fixture declara `publish` como o `issue-triage` fará.
-- [ ] Consumir `publish` com `prefetch = PUBLISH_PREFETCH` e ack manual, ligando os passos 1 a 10; ack só depois do commit.
-- [ ] Nova tentativa: depois do commit, publicar a cópia da mensagem em `publish.retry` com a expiração de D7 e confirmação do broker, e só então confirmar a original (log `publish.retry_scheduled`).
-- [ ] Banco ou broker indisponível: não confirmar a mensagem (volta para a fila), sem gastar tentativa; reconectar com backoff.
-- [ ] Testes de integração com RabbitMQ e PostgreSQL do testcontainers e a porta falsa, usando atrasos curtos nos testes (por exemplo `PUBLISH_RETRY_DELAYS_S=1,2`) e conferindo os valores de expiração: mesma mensagem entregue duas vezes faz um só POST (cenário 2); dois consumidores com a mesma mensagem fazem um só POST (cenário 4); 503, 503 e 201 terminam em `PUBLISHED` com `tries = 3` (cenário 7); 5xx três vezes termina em `FAILED (retries_exhausted)` (cenário 8); 429 com `Retry-After` respeita o prazo (cenário 10); `revision` obsoleta é confirmada sem efeito (cenário 13); schema inválido e `proposalId` inexistente são descartados (cenário 16); banco parado não confirma a mensagem e ela é processada quando o banco volta.
+- [x] Declarar `publish.retry` na subida e consumir `publish` com declaração passiva, tentando de novo com backoff enquanto ela não existir (D6). Nos testes, a fixture declara `publish` como o `issue-triage` fará.
+- [x] Consumir `publish` com `prefetch = PUBLISH_PREFETCH` e ack manual, ligando os passos 1 a 10; ack só depois do commit.
+- [x] Nova tentativa: depois do commit, publicar a cópia da mensagem em `publish.retry` com a expiração de D7 (ou da D12, quando a falha foi na busca do marcador) e confirmação do broker, e só então confirmar a original (log `publish.retry_scheduled`).
+- [x] Banco ou broker indisponível: não confirmar a mensagem (volta para a fila), sem gastar tentativa; reconectar com backoff.
+- [x] Testes de integração com RabbitMQ e PostgreSQL do testcontainers e a porta falsa, usando atrasos curtos nos testes (por exemplo `PUBLISH_RETRY_DELAYS_S=1,2`) e conferindo os valores de expiração: mesma mensagem entregue duas vezes faz um só POST (cenário 2); dois consumidores com a mesma mensagem fazem um só POST (cenário 4); 503, 503 e 201 terminam em `PUBLISHED` com `tries = 3` (cenário 7); 5xx três vezes termina em `FAILED (retries_exhausted)` (cenário 8); 429 com `Retry-After` respeita o prazo (cenário 10); `revision` obsoleta é confirmada sem efeito (cenário 13); schema inválido e `proposalId` inexistente são descartados (cenário 16); banco parado não confirma a mensagem e ela é processada quando o banco volta; busca do marcador com 503 e depois 201 no POST termina em `PUBLISHED` com `tries = 1` (D12).
 
 ### Etapa 8 — Observabilidade
-Requisitos: RNF14. Depende de: Etapa 7.
-- [ ] Os oito eventos de log de "Contratos > Logs", todos com `event_id`, `repository`, `issue_number` e `revision` (quando já conhecidos), e com `try_number`, `http_status`, atraso, `failure_kind` e `last_error` onde a spec indica.
-- [ ] `event_id` ligado ao contexto do structlog durante o processamento de cada mensagem.
-- [ ] Nenhum log contém o token nem o corpo do comentário.
-- [ ] Testes com `structlog.testing.capture_logs` cobrindo cada evento e a ausência do token.
+Requisitos: RNF14. Depende de: Etapa 7. Pré-condição: decisão D14 validada.
+- [x] Correção da D14 (P-a): o `Settings` exige pelo menos `max(1, PUBLISH_MAX_TRIES - 1)` valores em `PUBLISH_RETRY_DELAYS_S`; teste com `PUBLISH_MAX_TRIES=1` e lista vazia recusado.
+- [x] Correção da D14 (P-b): antes do `POST`, `tries >= PUBLISH_MAX_TRIES` → `FAILED (retries_exhausted)` sem chamar o GitHub e com o `last_error` da D14; teste com linha `PENDING` em `tries = 2` e `PUBLISH_MAX_TRIES = 2` (nenhum `POST`, nenhuma linha nova em `publication_tries`).
+- [x] Os oito eventos de log de "Contratos > Logs", todos com `event_id`, `repository`, `issue_number` e `revision` (quando já conhecidos), e com `try_number`, `http_status`, atraso, `failure_kind` e `last_error` onde a spec indica.
+- [x] `event_id` ligado ao contexto do structlog durante o processamento de cada mensagem.
+- [x] Nenhum log contém o token nem o corpo do comentário.
+- [x] Testes com `structlog.testing.capture_logs` cobrindo cada evento e a ausência do token.
 
 ### Etapa 9 — Resiliência, ferramentas locais e demonstração
 Requisitos: RF22 a RF25, RNF16. Depende de: Etapa 8.
-- [ ] Criar `scripts/publish_message.py`, que envia uma mensagem `{"proposalId", "revision"}` para a fila `publish` (ferramenta de desenvolvimento).
-- [ ] Testes de ponta a ponta do worker (PostgreSQL e RabbitMQ reais, porta falsa): mensagens acumuladas com o worker parado são publicadas quando ele volta (cenário 6, parte do publisher); queda do broker durante o consumo não perde a mensagem.
-- [ ] README: como rodar localmente, migrar, enviar mensagens de teste, rodar os testes e o que é real ou simulado em cada teste.
-- [ ] (manual) Criar o token fine-grained da conta de teste com permissão de escrita em issues só no repositório de teste e configurá-lo no `.env`.
-- [ ] (manual) Publicar um comentário real no repositório de teste e conferir id e URL gravados (cenário 1 real).
-- [ ] (manual) Depois que o `issue-triage` existir, executar o fluxo completo: webhook reenviado não gera comentário novo (cenário 3) e publisher parado com a análise funcionando (cenário 6).
+- [x] Criar `scripts/publish_message.py`, que envia uma mensagem `{"proposalId", "revision"}` para a fila `publish` (ferramenta de desenvolvimento).
+- [x] Testes de ponta a ponta do worker (PostgreSQL e RabbitMQ reais, porta falsa): mensagens acumuladas com o worker parado são publicadas quando ele volta (cenário 6, parte do publisher); queda do broker durante o consumo não perde a mensagem.
+- [x] README: como rodar localmente, migrar, enviar mensagens de teste, rodar os testes e o que é real ou simulado em cada teste.
+- [x] (manual) Criar o token fine-grained da conta de teste com permissão de escrita em issues só no repositório de teste e configurá-lo no `.env`.
+- [x] (manual) Publicar um comentário real no repositório de teste e conferir id e URL gravados (cenário 1 real).
+- [x] (manual) Depois que o `issue-triage` existir, executar o fluxo completo: webhook reenviado não gera comentário novo (cenário 3) e publisher parado com a análise funcionando (cenário 6).
+
+### Etapa 10 — Ajustes finais
+Requisitos: RNF14, RNF03. Depende de: Etapa 9. Pré-condição: decisão D15 validada.
+- [x] `GET /user` na subida (D15, item 3): falha temporária tenta de novo com o backoff de 1 s a 30 s e log de warning `worker.identify_failed`, parando se vier o pedido de parada; falha permanente encerra com log de erro `worker.identify_failed` e código de saída diferente de zero. Testes com a porta falsa: 503 e depois 200 segue e consome; 401 encerra sem conectar ao broker.
+- [x] `publish.received` só depois de validar o schema, com `proposal_id` e `revision` (D15, item 1); ajustar os testes de log (mensagem inválida gera só `publish.discarded_invalid`).
+- [x] Queda do broker com mensagem em curso (D15, item 2, revisado): proteger o processamento da mensagem do cancelamento do aio-pika para que o `POST` e o commit terminem; ack que falha depois do commit gera `publish.ack_failed`, sem backoff. O teste de queda do broker confere `post_count = 1`, `tries = 1` e um único comentário, e a docstring descreve esse comportamento. Partir das alterações já feitas na working tree (itens 1 e 2 desta etapa).
+- [x] README: registrar os eventos de log novos e o comportamento do `GET /user` na subida.
 
 ## Pontos em aberto
 
@@ -242,11 +362,11 @@ Divergências entre documentos e lacunas. Cada decisão tomada aqui deve voltar 
 | # | Ponto | Situação | Bloqueia |
 |---|---|---|---|
 | P1 | Nomes no schema `inbound` | Resolvido: a Issue Publisher Spec passou a usar `inbound.issue_presentation` e `inbound.issue_events`, como a Modelagem de dados | — |
-| P2 | Formato do marcador oculto | A spec assume `<!-- triage:<eventId>:<revision> -->` e pede que o formato seja registrado na spec da triagem. Este plano usa esse formato | — (registrar na spec da triagem) |
-| P3 | Origem do catálogo no banco | O High Level Design diz que o catálogo é o `catalog.yaml` lido do disco pelo `issue-triage`; a Modelagem de dados e a Issue Publisher Spec leem `catalog.projects` no banco, carregado por seed. Falta definir quem gera o seed a partir do `catalog.yaml` | Não bloqueia os testes (stub de D11); bloqueia a execução integrada |
+| P2 | Formato do marcador oculto | Resolvido em 2026-11-17: `<!-- triage:<eventId>:<revision> -->` registrado na Issue Triage Spec (seção 4, templates do comentário), com limpeza de `<!--`/`-->` no texto vindo da IA | — |
+| P3 | Origem do catálogo no banco | Resolvido em 2026-11-17 (ADR-0001 — Catálogo de projetos dentro do issue-triage): não há `catalog.yaml`; `catalog/schema.sql` e `catalog/seed.sql` ficam no repositório do `issue-triage` e são executados pelo initdb do PostgreSQL. O publisher só lê `catalog.projects` | — |
 | P4 | Quem declara a topologia de `publish` | Resolvido: o `issue-triage` declara `publish`; o publisher declara só `publish.retry` (D6). Registrado na Issue Publisher Spec e no High Level Design | — |
 | P5 | Limite de tentativas acima de 3 | Resolvido: o limite fica em 3. A Issue Publisher Spec não prevê mais o quarto atraso, e `PUBLISH_RETRY_DELAYS_S` passou a `10,20` | — |
-| P6 | Papéis, permissões e compose integrado | O papel `publisher_svc` e os `GRANT` atravessam serviços; falta decidir onde ficam e onde mora o compose dos três serviços (mesmo ponto do issue-analyst-api) | Não bloqueia: este plano usa o compose local e `DATABASE_URL` |
+| P6 | Papéis, permissões e compose integrado | O papel `publisher_svc` e os `GRANT` atravessam serviços; o compose dos três serviços fica no repositório do `issue-triage` (ADR-0001, 2026-11-17), com os papéis e `GRANT` no initdb (`infra/initdb/00_roles.sql`, plano do issue-triage, Etapa 13) | Não bloqueia: este plano usa o compose local e `DATABASE_URL` |
 
 ## Fora do escopo
 
@@ -254,4 +374,4 @@ Geração do texto do comentário e do marcador (`issue-triage`), view `triage.p
 
 ## Limitações assumidas
 
-Busca do marcador e POST não são atômicos no GitHub (outro cliente publicando o mesmo marcador não é detectado); listagem atrasada do GitHub pode, numa reentrega imediata, criar um segundo comentário; comentário apagado à mão numa publicação `PENDING` é recriado; o lock da linha mantém uma conexão aberta durante a chamada HTTP; reprocessar uma falha de publicação refaz a análise inteira; mensagem inválida é descartada só com log, sem DLQ; com `publish.retry` por expiração, um atraso longo pode segurar um curto que esteja atrás dele.
+Busca do marcador e POST não são atômicos no GitHub (outro cliente publicando o mesmo marcador não é detectado); listagem atrasada do GitHub pode, numa reentrega imediata, criar um segundo comentário; comentário apagado à mão numa publicação `PENDING` é recriado; o lock da linha mantém uma conexão aberta durante a chamada HTTP; reprocessar uma falha de publicação refaz a análise inteira; mensagem inválida é descartada só com log, sem DLQ; com `publish.retry` por expiração, um atraso longo pode segurar um curto que esteja atrás dele; uma mensagem que falha sempre por bug volta para a fila sem fim, com backoff de até 30 s, visível só pelo log `publish.processing_failed` (sem DLQ na fila `publish`; D15).
