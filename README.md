@@ -1,12 +1,49 @@
 # issue-publisher
 
-Consome a fila `publish` e publica o comentário de triagem na issue de origem no GitHub.
-É um worker sem HTTP: não expõe porta.
+Último serviço do Assistente de manutenção de software: consome a fila `publish` e publica o comentário de
+triagem na issue de origem no GitHub, sem duplicar. É um worker sem HTTP: não expõe porta. Faz parte de
+um sistema de três serviços; a visão geral (arquitetura, como subir tudo, catálogo, exemplos e
+demonstração) está no [README principal](https://github.com/Yngredh/issue-triage/blob/main/README.md), no repositório `issue-triage`.
 
-## Pré-requisitos
+## Papel no sistema
 
-- [uv](https://docs.astral.sh/uv/) (instala o Python 3.12 automaticamente, se necessário)
-- Docker com Docker Compose (PostgreSQL e RabbitMQ locais e testes de integração)
+Recebe de [`issue-triage`](https://github.com/Yngredh/issue-triage), pela fila `publish`, a referência de
+uma proposta pronta (`{"proposalId", "revision"}`) e a transforma em um comentário na issue, registrando
+a confirmação do GitHub (id, URL e data). Quem enfileira é o `issue-triage` (pela outbox dele); a consulta
+do resultado, no [`issue-analyst-api`](https://github.com/Yngredh/issue-analyst-api), lê o estado que este
+serviço grava.
+
+## Responsabilidades e o que não faz
+
+- Valida a mensagem e lê a proposta pela view `triage.publishable_proposals` (repositório, issue, corpo
+  e estado do caso vêm sempre da view, nunca da mensagem); mensagem inválida é descartada com log.
+- Publica só `READY_TO_PUBLISH` de repositório que está no catálogo.
+- Reivindica a publicação com `INSERT ... ON CONFLICT` em `(repository, issue_number, revision)` e
+  procura o marcador oculto do comentário na issue antes de todo `POST`.
+- Tenta publicar até 3 vezes, com espera progressiva (10 s e 20 s) pela fila `publish.retry`; token sem
+  permissão ou issue inexistente é falha permanente.
+- Grava o estado da publicação (`PENDING`, `PUBLISHED` ou `FAILED`), o id e a URL do comentário.
+- **Não** chama o provedor de IA, não escreve em `triage` nem em `inbound` e não expõe HTTP.
+
+## Interfaces
+
+| Interface | Detalhe |
+|---|---|
+| Fila `publish` | Consome `{"proposalId", "revision"}`; quem a declara é o `issue-triage` |
+| Fila `publish.retry` | Declarada por este serviço: fila de espera com expiração por mensagem e dead-letter de volta para `publish` |
+| Schema `publisher` | Lê e escreve `publications` e `publication_tries` |
+| `triage.publishable_proposals` e `catalog.projects` | Só leitura |
+| API do GitHub | Identifica a conta (`GET /user`), procura o marcador nos comentários da issue e cria o comentário; token `GITHUB_TOKEN` |
+
+## Métodos implementados aqui
+
+Linhas da tabela de métodos do [README principal](https://github.com/Yngredh/issue-triage/blob/main/README.md) que cabem a este serviço:
+
+| Método | Onde está neste repositório |
+|---|---|
+| Consumidor idempotente (deduplicação na publicação) | `src/issue_publisher/domain/publication.py` (`claim_and_check`, `build_marker`: reivindicação `INSERT ... ON CONFLICT DO NOTHING` + `FOR UPDATE` e marcador `<!-- triage:<eventId>:<revision> -->`); `src/issue_publisher/adapters/publications.py` (`PostgresPublicationStore`); `src/issue_publisher/adapters/github.py` (`find_comment_by_marker`); `src/issue_publisher/domain/publishing.py` (`publish_proposal`: busca do marcador antes de todo `POST`); `migrations/0001_publisher_schema.sql` (`UNIQUE (repository, issue_number, revision)`) |
+| Nova tentativa com espera, sem DLQ (apoio, não conta como método) | `src/issue_publisher/domain/publishing.py` (`RetryPolicy`) e `src/issue_publisher/consumer.py` (`MessageHandler`, `_schedule_retry`): cópia da mensagem na fila `publish.retry`, que devolve a `publish` ao expirar |
+| Portas e adaptadores (apoio, não conta como método) | `domain/github.py` (`GitHubIssuesPort`) com adaptador `adapters/github.py` (httpx) e simulado em `tests/fakes/github.py` |
 
 ## Configuração
 
@@ -25,7 +62,11 @@ RABBITMQ_URL=amqp://guest:guest@localhost:5672/
 
 Nunca commite o `.env`.
 
-## Subir a infraestrutura local
+## Executar isolado
+
+Pré-requisitos: [uv](https://docs.astral.sh/uv/) (instala o Python 3.12, se necessário) e Docker com Docker Compose. O ambiente completo está no [README principal](https://github.com/Yngredh/issue-triage/blob/main/README.md).
+
+### Subir a infraestrutura local
 
 ```bash
 docker compose up -d      # PostgreSQL 16 (5432) e RabbitMQ (5672, painel em 15672)
@@ -34,7 +75,7 @@ docker compose down       # para os contêineres (use -v para apagar os dados)
 
 O compose usa as mesmas portas do compose do issue-analyst-api; suba um de cada vez.
 
-## Rodar localmente
+### Rodar localmente
 
 ```bash
 uv sync                                   # instala as dependências
@@ -68,31 +109,7 @@ commit são protegidos do cancelamento): só o ack falha, com o log de warning `
 e sem backoff. A mensagem volta para a fila quando o broker retorna, e a reentrega encontra a
 publicação já `PUBLISHED`, sem chamar o GitHub de novo.
 
-## Logs
-
-JSON em stdout. Todo log de mensagem leva `event_id`, `repository`, `issue_number` e `revision`,
-quando já conhecidos. Todo log também leva `module`, `func_name` (de onde o log saiu) e `message`
-(texto fixo em português, definido em `src/issue_publisher/log_messages.py`). Exemplo:
-
-```json
-{"proposal_id": 7, "revision": 2, "event": "publish.received", "event_id": "12151e32-...", "repository": "Yaane-h/mechanical-hub-orchestrator", "issue_number": 1, "service": "issue-publisher", "level": "info", "timestamp": "2026-11-19T11:29:00Z", "module": "publish", "func_name": "screen_message", "message": "Proposta recebida da fila de publicação"}
-```
-
-Eventos:
-
-| Evento | Quando |
-|---|---|
-| `publish.received` | mensagem com schema válido (leva `proposal_id` e `revision`); mensagem inválida gera só `publish.discarded_invalid` |
-| `publish.discarded_invalid` | schema inválido, proposta inexistente ou `revision` diferente da view |
-| `publish.skipped_stale` | `revision` menor que a tentativa atual do caso |
-| `publish.marker_found` | comentário com o marcador já existe na issue e é adotado |
-| `publish.marker_search_failed` | falha na busca do marcador (não consome tentativa) |
-| `publish.try`, `publish.published`, `publish.failed` | tentativa de `POST`, sucesso e falha final |
-| `publish.retry_scheduled` | cópia enviada para `publish.retry` com o atraso |
-| `publish.processing_failed` | exceção no processamento (banco ou broker fora): espera o backoff e devolve a mensagem |
-| `publish.requeue_failed` | o nack da devolução falhou porque o canal já caiu |
-| `publish.ack_failed` | o ack falhou depois do commit (canal caído); sem backoff |
-| `worker.identify_failed` | falha no `GET /user` da subida (warning se temporária, erro se permanente) |
+### Imagem Docker
 
 Com a imagem Docker:
 
@@ -101,7 +118,9 @@ docker build -t issue-publisher .
 docker run --env-file .env issue-publisher
 ```
 
-## Enviar mensagens de teste
+## Scripts e exemplos
+
+### Enviar mensagens de teste
 
 `scripts/publish_message.py` envia `{"proposalId": <id>, "revision": <n>}` para a fila `publish`
 (ferramenta de desenvolvimento). A URL vem de `--rabbitmq-url` ou de `RABBITMQ_URL` (ambiente ou
@@ -138,7 +157,45 @@ Os schemas `triage` e `catalog` existem nos testes só pelo stub
 `tests/fixtures/sql/triage_catalog_stub.sql`. A demonstração contra o GitHub real (token
 fine-grained da conta de teste, comentário no repositório de teste) é manual.
 
+## Logs
+
+JSON em stdout. Todo log de mensagem leva `event_id`, `repository`, `issue_number` e `revision`,
+quando já conhecidos. Todo log também leva `module`, `func_name` (de onde o log saiu) e `message`
+(texto fixo em português, definido em `src/issue_publisher/log_messages.py`). Exemplo:
+
+```json
+{"proposal_id": 7, "revision": 2, "event": "publish.received", "event_id": "12151e32-...", "repository": "Yaane-h/mechanical-hub-orchestrator", "issue_number": 1, "service": "issue-publisher", "level": "info", "timestamp": "2026-11-19T11:29:00Z", "module": "publish", "func_name": "screen_message", "message": "Proposta recebida da fila de publicação"}
+```
+
+Eventos:
+
+| Evento | Quando |
+|---|---|
+| `publish.received` | mensagem com schema válido (leva `proposal_id` e `revision`); mensagem inválida gera só `publish.discarded_invalid` |
+| `publish.discarded_invalid` | schema inválido, proposta inexistente ou `revision` diferente da view |
+| `publish.skipped_stale` | `revision` menor que a tentativa atual do caso |
+| `publish.marker_found` | comentário com o marcador já existe na issue e é adotado |
+| `publish.marker_search_failed` | falha na busca do marcador (não consome tentativa) |
+| `publish.try`, `publish.published`, `publish.failed` | tentativa de `POST`, sucesso e falha final |
+| `publish.retry_scheduled` | cópia enviada para `publish.retry` com o atraso |
+| `publish.processing_failed` | exceção no processamento (banco ou broker fora): espera o backoff e devolve a mensagem |
+| `publish.requeue_failed` | o nack da devolução falhou porque o canal já caiu |
+| `publish.ack_failed` | o ack falhou depois do commit (canal caído); sem backoff |
+| `worker.identify_failed` | falha no `GET /user` da subida (warning se temporária, erro se permanente) |
+
+## Limitações do serviço
+
+- A fila `publish` não tem DLQ: o limite de 3 tentativas fica no banco (`publisher.publications`) e uma
+  mensagem inválida (schema errado ou `proposalId` inexistente) é descartada com log.
+- Se o serviço cair depois de comentar e antes de gravar `PUBLISHED`, a reentrega procura o marcador
+  oculto e adota o comentário existente (`publish.marker_found`), sem criar outro.
+- A view `triage.publishable_proposals` e `catalog.projects` pertencem a outros serviços e precisam
+  existir; nos testes vêm de um stub.
+- Com um `GITHUB_TOKEN` real, o worker publica de verdade: use só o repositório de teste.
+
 ## Documentação
 
-- Plano de desenvolvimento: [docs/plano-desenvolvimento-issue-publisher.md](docs/plano-desenvolvimento-issue-publisher.md)
-- Documentos do projeto: [../docs/doc-reference.md](../docs/doc-reference.md), que aponta para o índice
+- Plano de desenvolvimento: [docs/plano-desenvolvimento-issue-publisher.md](docs/plano-desenvolvimento-issue-publisher.md).
+- Visão do sistema: [README principal](https://github.com/Yngredh/issue-triage/blob/main/README.md).
+- Documentos de design: Issue Publisher Spec, Modelagem de dados, Requisitos e High Level Design, listados
+  no README principal.
